@@ -129,6 +129,9 @@ jobs:
     needs: [validation, terraform-plan]
     if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event.inputs.action == 'apply')
     environment: production
+    outputs:
+      instance_ip: ${{ steps.terraform-outputs.outputs.instance_ip }}
+      instance_id: ${{ steps.terraform-outputs.outputs.instance_id }}
     
     steps:
     - name: 📥 Checkout code
@@ -138,6 +141,7 @@ jobs:
       uses: hashicorp/setup-terraform@v3
       with:
         terraform_version: ${{ env.TF_VERSION }}
+        terraform_wrapper: false
         
     - name: 🔐 Configure AWS Credentials
       uses: aws-actions/configure-aws-credentials@v4
@@ -161,19 +165,22 @@ jobs:
           -var="key_pair_name=fode-devops-key"
           
     - name: 📤 Export Terraform Outputs
+      id: terraform-outputs
       working-directory: ./terraform
       run: |
-        echo "INSTANCE_IP=$(terraform output -raw public_ip)" >> $GITHUB_ENV
-        echo "INSTANCE_ID=$(terraform output -raw instance_id)" >> $GITHUB_ENV
+        INSTANCE_IP=$(terraform output -raw public_ip)
+        INSTANCE_ID=$(terraform output -raw instance_id)
+        echo "instance_ip=$INSTANCE_IP" >> $GITHUB_OUTPUT
+        echo "instance_id=$INSTANCE_ID" >> $GITHUB_OUTPUT
         
     - name: 📊 Create Deployment Summary
       run: |
         echo "## 🚀 Déploiement Fode-DevOps Réussi!" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
         echo "### 📋 Informations du déploiement:" >> $GITHUB_STEP_SUMMARY
-        echo "- **Instance ID:** ${{ env.INSTANCE_ID }}" >> $GITHUB_STEP_SUMMARY
-        echo "- **IP Publique:** ${{ env.INSTANCE_IP }}" >> $GITHUB_STEP_SUMMARY
-        echo "- **URL:** http://${{ env.INSTANCE_IP }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Instance ID:** ${{ steps.terraform-outputs.outputs.instance_id }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **IP Publique:** ${{ steps.terraform-outputs.outputs.instance_ip }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **URL:** http://${{ steps.terraform-outputs.outputs.instance_ip }}" >> $GITHUB_STEP_SUMMARY
         echo "- **Région:** ${{ env.AWS_DEFAULT_REGION }}" >> $GITHUB_STEP_SUMMARY
         echo "- **Environnement:** production" >> $GITHUB_STEP_SUMMARY
 
@@ -210,13 +217,12 @@ jobs:
     - name: ⚙️ Run Ansible Playbook (Amazon Linux 2023)
       working-directory: ./ansible
       run: |
+        # Utiliser l'IP de l'output du job précédent
+        INSTANCE_IP="${{ needs.terraform-apply.outputs.instance_ip }}"
+        
         # Créer l'inventaire dynamique pour Amazon Linux 2023
         echo "[web]" > inventory/hosts
-        aws ec2 describe-instances \
-          --filters "Name=tag:Name,Values=fode-devops-production-web-server" \
-                   "Name=instance-state-name,Values=running" \
-          --query 'Reservations[*].Instances[*].PublicIpAddress' \
-          --output text >> inventory/hosts
+        echo "$INSTANCE_IP" >> inventory/hosts
         
         # Ajouter les variables pour Amazon Linux 2023
         echo "" >> inventory/hosts
@@ -242,25 +248,12 @@ jobs:
     steps:
     - name: 📥 Checkout code
       uses: actions/checkout@v4
-      
-    - name: 🔐 Configure AWS Credentials
-      uses: aws-actions/configure-aws-credentials@v4
-      with:
-        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-region: ${{ env.AWS_DEFAULT_REGION }}
-        
-    - name: 📡 Get Instance IP
-      run: |
-        INSTANCE_IP=$(aws ec2 describe-instances \
-          --filters "Name=tag:Name,Values=fode-devops-production-web-server" \
-                   "Name=instance-state-name,Values=running" \
-          --query 'Reservations[*].Instances[*].PublicIpAddress' \
-          --output text)
-        echo "INSTANCE_IP=$INSTANCE_IP" >> $GITHUB_ENV
         
     - name: 🧪 Test Web Server
       run: |
+        # Récupérer l'IP de l'output du job terraform-apply
+        INSTANCE_IP="${{ needs.terraform-apply.outputs.instance_ip }}"
+        
         # Attendre que le serveur soit prêt (Amazon Linux 2023 + user_data)
         echo "⏳ Attente du démarrage du serveur Amazon Linux 2023..."
         sleep 90
@@ -268,7 +261,7 @@ jobs:
         # Test de connectivité HTTP sur Amazon Linux 2023
         echo "🌐 Test de connectivité HTTP (AL2023 + Apache)..."
         for i in {1..15}; do
-          if curl -f -s http://${{ env.INSTANCE_IP }}; then
+          if curl -f -s http://$INSTANCE_IP; then
             echo "✅ Serveur web Amazon Linux 2023 accessible!"
             break
           else
@@ -279,7 +272,7 @@ jobs:
         
         # Test de contenu
         echo "📄 Test du contenu..."
-        if curl -s http://${{ env.INSTANCE_IP }} | grep -q "Fode-DevOps"; then
+        if curl -s http://$INSTANCE_IP | grep -q "Fode-DevOps"; then
           echo "✅ Contenu correct détecté!"
         else
           echo "❌ Contenu incorrect!"
