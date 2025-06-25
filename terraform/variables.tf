@@ -12,7 +12,7 @@ variable "environment" {
   description = "Environnement de déploiement"
   type        = string
   default     = "dev"
-  
+
   validation {
     condition     = contains(["dev", "staging", "prod"], var.environment)
     error_message = "L'environnement doit être dev, staging ou prod."
@@ -35,7 +35,7 @@ variable "instance_type" {
   description = "Type d'instance EC2"
   type        = string
   default     = "t2.micro"
-  
+
   validation {
     condition     = contains(["t2.micro", "t2.small", "t3.micro", "t3.small"], var.instance_type)
     error_message = "Le type d'instance doit être compatible avec le Free Tier."
