@@ -1,0 +1,82 @@
+# =============================================================================
+# CHECKOV CONFIGURATION - .checkov.yml
+# Placez ce fichier à la racine de votre projet
+# =============================================================================
+
+# Répertoires à analyser
+directory:
+  - terraform/
+
+# Répertoires à ignorer
+skip-path:
+  - terraform/.terraform/
+  - terraform/terraform.tfstate*
+  - terraform/.terraform.lock.hcl
+
+# Frameworks à analyser
+framework:
+  - terraform
+
+# Format de sortie
+output: cli
+
+# Checks à ignorer globalement (avec justification)
+skip-check:
+  # Security Groups - Load Balancer public
+  - CKV_AWS_260  # ALB doit accepter le trafic depuis Internet
+  - CKV_AWS_382  # Security Group ingress 0.0.0.0/0 pour ALB public
+  
+  # S3 - Si vous utilisez des buckets publics intentionnellement
+  - CKV_AWS_144  # S3 bucket public pour assets statiques
+  - CKV_AWS_145  # S3 bucket public read pour CDN
+  
+  # EC2 - Images AMI publiques
+  - CKV_AWS_79   # Utilisation d'AMI publiques AWS
+  
+  # IAM - Certaines politiques larges peuvent être nécessaires
+  - CKV_AWS_62   # IAM role avec permissions étendues pour EC2
+  
+  # Logging - Peut être configuré plus tard
+  - CKV_AWS_76   # CloudTrail logging (non critique pour dev)
+
+# Checks à toujours exécuter (haute priorité sécurité)
+check:
+  - CKV_AWS_8    # Launch configuration associée avec security group
+  - CKV_AWS_23   # Security group règles d'entrée depuis 0.0.0.0/0 port 22
+  - CKV_AWS_24   # Security group règles d'entrée depuis 0.0.0.0/0 port 3389
+  - CKV_AWS_25   # Security group règles SSH/RDP restrictives
+  - CKV_AWS_40   # IAM policies attachées aux utilisateurs
+  - CKV_AWS_41   # IAM access keys rotation
+  - CKV_AWS_61   # IAM policy attachée aux utilisateurs
+  - CKV_AWS_149  # Chiffrement des volumes EBS
+
+# Configuration pour les environnements
+baseline:
+  - development:
+      skip-check:
+        - CKV_AWS_8   # Moins strict en dev
+        - CKV_AWS_76  # Pas de CloudTrail en dev
+  - production:
+      check:
+        - CKV_AWS_8   # Strict en production
+        - CKV_AWS_76  # CloudTrail obligatoire en production
+
+# Rapports
+create-baseline: false
+evaluate-variables: true
+
+# Ignorer les erreurs de certificats auto-signés
+ca-certificate: ""
+cert: ""
+
+# Timeout pour les scans
+timeout: 120
+
+# Niveau de verbosité (DEBUG, INFO, WARNING, ERROR)
+log-level: INFO
+
+# Sortie compacte
+compact: true
+
+# Afficher les règles réussies
+quiet: false

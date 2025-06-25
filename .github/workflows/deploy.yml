@@ -1,5 +1,5 @@
 # =============================================================================
-# DEPLOY.YML - GitHub Actions Workflow pour Fode-DevOps Infrastructure
+# DEPLOY.YML - GitHub Actions Workflow pour Fode-DevOps Infrastructure (CORRIGÉ)
 # =============================================================================
 
 name: 🚀 Fode-DevOps Infrastructure Deployment
@@ -27,19 +27,151 @@ on:
           - plan
           - apply
           - destroy
+          - create-backend
 
 env:
   TF_VERSION: '1.6.0'
   ANSIBLE_VERSION: '2.15'
   AWS_DEFAULT_REGION: 'us-east-1'
+  BACKEND_BUCKET: 'fode-devops-terraform-state'
+  DYNAMODB_TABLE: 'fode-devops-terraform-locks'
 
 jobs:
   # =============================================================================
-  # JOB 1: VALIDATION ET SÉCURITÉ
+  # JOB 0: CRÉATION DU BACKEND S3 (SI NÉCESSAIRE)
+  # =============================================================================
+  create-backend:
+    name: 🏗️ Créer Backend S3
+    runs-on: ubuntu-latest
+    if: github.event.inputs.action == 'create-backend'
+    
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+      
+    - name: 🔐 Configure AWS Credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_DEFAULT_REGION }}
+        
+    - name: 🏗️ Create S3 Backend Infrastructure
+      run: |
+        # Créer le bucket S3 pour l'état Terraform
+        echo "📦 Création du bucket S3: $BACKEND_BUCKET"
+        if ! aws s3 ls s3://$BACKEND_BUCKET 2>/dev/null; then
+          aws s3 mb s3://$BACKEND_BUCKET --region $AWS_DEFAULT_REGION
+          echo "✅ Bucket S3 créé"
+        else
+          echo "✅ Bucket S3 existe déjà"
+        fi
+        
+        # Activer le versioning
+        aws s3api put-bucket-versioning \
+          --bucket $BACKEND_BUCKET \
+          --versioning-configuration Status=Enabled
+        
+        # Activer le chiffrement
+        aws s3api put-bucket-encryption \
+          --bucket $BACKEND_BUCKET \
+          --server-side-encryption-configuration '{
+            "Rules": [
+              {
+                "ApplyServerSideEncryptionByDefault": {
+                  "SSEAlgorithm": "AES256"
+                }
+              }
+            ]
+          }'
+        
+        # Bloquer l'accès public
+        aws s3api put-public-access-block \
+          --bucket $BACKEND_BUCKET \
+          --public-access-block-configuration \
+          BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
+        
+        # Créer la table DynamoDB
+        echo "🔐 Création de la table DynamoDB: $DYNAMODB_TABLE"
+        if ! aws dynamodb describe-table --table-name $DYNAMODB_TABLE --region $AWS_DEFAULT_REGION 2>/dev/null; then
+          aws dynamodb create-table \
+            --table-name $DYNAMODB_TABLE \
+            --attribute-definitions AttributeName=LockID,AttributeType=S \
+            --key-schema AttributeName=LockID,KeyType=HASH \
+            --provisioned-throughput ReadCapacityUnits=5,WriteCapacityUnits=5 \
+            --region $AWS_DEFAULT_REGION \
+            --tags Key=Name,Value="Terraform State Lock" Key=Project,Value="Fode-DevOps"
+          
+          # Attendre que la table soit active
+          aws dynamodb wait table-exists --table-name $DYNAMODB_TABLE --region $AWS_DEFAULT_REGION
+          echo "✅ Table DynamoDB créée"
+        else
+          echo "✅ Table DynamoDB existe déjà"
+        fi
+        
+        echo "🎉 Backend infrastructure créée avec succès!"
+
+  # =============================================================================
+  # JOB 1: VÉRIFICATION DU BACKEND
+  # =============================================================================
+  check-backend:
+    name: 🔍 Vérifier Backend
+    runs-on: ubuntu-latest
+    if: github.event.inputs.action != 'create-backend'
+    outputs:
+      backend_exists: ${{ steps.check.outputs.backend_exists }}
+    
+    steps:
+    - name: 🔐 Configure AWS Credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_DEFAULT_REGION }}
+        
+    - name: 🔍 Check Backend Existence
+      id: check
+      run: |
+        echo "Vérification de l'existence du backend..."
+        
+        # Vérifier le bucket S3
+        if aws s3 ls s3://$BACKEND_BUCKET 2>/dev/null; then
+          echo "✅ Bucket S3 existe"
+          S3_EXISTS=true
+        else
+          echo "❌ Bucket S3 n'existe pas"
+          S3_EXISTS=false
+        fi
+        
+        # Vérifier la table DynamoDB
+        if aws dynamodb describe-table --table-name $DYNAMODB_TABLE --region $AWS_DEFAULT_REGION 2>/dev/null; then
+          echo "✅ Table DynamoDB existe"
+          DYNAMODB_EXISTS=true
+        else
+          echo "❌ Table DynamoDB n'existe pas"
+          DYNAMODB_EXISTS=false
+        fi
+        
+        if [ "$S3_EXISTS" = true ] && [ "$DYNAMODB_EXISTS" = true ]; then
+          echo "backend_exists=true" >> $GITHUB_OUTPUT
+          echo "✅ Backend infrastructure existe"
+        else
+          echo "backend_exists=false" >> $GITHUB_OUTPUT
+          echo "❌ Backend infrastructure manquante"
+          echo ""
+          echo "Pour créer le backend, exécutez:"
+          echo "gh workflow run deploy.yml --field action=create-backend"
+          exit 1
+        fi
+
+  # =============================================================================
+  # JOB 2: VALIDATION ET SÉCURITÉ
   # =============================================================================
   validation:
     name: 🔍 Validation et Sécurité
     runs-on: ubuntu-latest
+    needs: check-backend
+    if: needs.check-backend.outputs.backend_exists == 'true'
     
     steps:
     - name: 📥 Checkout code
@@ -55,7 +187,7 @@ jobs:
         mkdir -p ~/.ssh
         echo "${{ secrets.SSH_PUBLIC_KEY }}" > ~/.ssh/id_rsa.pub
         chmod 600 ~/.ssh/id_rsa.pub
-        # Créer aussi le répertoire keys dans terraform si nécessaire
+        # Créer le répertoire keys dans terraform
         mkdir -p ./terraform/keys
         cp ~/.ssh/id_rsa.pub ./terraform/keys/
         
@@ -93,13 +225,13 @@ jobs:
       continue-on-error: true
 
   # =============================================================================
-  # JOB 2: TERRAFORM PLAN
+  # JOB 3: TERRAFORM PLAN
   # =============================================================================
   terraform-plan:
     name: 📋 Terraform Plan
     runs-on: ubuntu-latest
-    needs: validation
-    if: github.event_name == 'pull_request' || github.event.inputs.action == 'plan'
+    needs: [check-backend, validation]
+    if: needs.check-backend.outputs.backend_exists == 'true' && (github.event_name == 'pull_request' || github.event.inputs.action == 'plan')
     
     steps:
     - name: 📥 Checkout code
@@ -115,7 +247,6 @@ jobs:
         mkdir -p ~/.ssh
         echo "${{ secrets.SSH_PUBLIC_KEY }}" > ~/.ssh/id_rsa.pub
         chmod 600 ~/.ssh/id_rsa.pub
-        # Créer aussi le répertoire keys dans terraform
         mkdir -p ./terraform/keys
         cp ~/.ssh/id_rsa.pub ./terraform/keys/
         
@@ -147,16 +278,16 @@ jobs:
         retention-days: 30
 
   # =============================================================================
-  # JOB 3: TERRAFORM APPLY
+  # JOB 4: TERRAFORM APPLY
   # =============================================================================
   terraform-apply:
     name: 🚀 Terraform Apply
     runs-on: ubuntu-latest
-    needs: [validation, terraform-plan]
-    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event.inputs.action == 'apply')
+    needs: [check-backend, validation, terraform-plan]
+    if: needs.check-backend.outputs.backend_exists == 'true' && github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event.inputs.action == 'apply')
     environment: production
     outputs:
-      instance_ip: ${{ steps.terraform-outputs.outputs.instance_ip }}
+      load_balancer_dns: ${{ steps.terraform-outputs.outputs.load_balancer_dns }}
       instance_id: ${{ steps.terraform-outputs.outputs.instance_id }}
     
     steps:
@@ -174,7 +305,6 @@ jobs:
         mkdir -p ~/.ssh
         echo "${{ secrets.SSH_PUBLIC_KEY }}" > ~/.ssh/id_rsa.pub
         chmod 600 ~/.ssh/id_rsa.pub
-        # Créer aussi le répertoire keys dans terraform
         mkdir -p ./terraform/keys
         cp ~/.ssh/id_rsa.pub ./terraform/keys/
         
@@ -202,9 +332,9 @@ jobs:
       id: terraform-outputs
       working-directory: ./terraform
       run: |
-        INSTANCE_IP=$(terraform output -raw public_ip)
+        LB_DNS=$(terraform output -raw load_balancer_dns)
         INSTANCE_ID=$(terraform output -raw instance_id)
-        echo "instance_ip=$INSTANCE_IP" >> $GITHUB_OUTPUT
+        echo "load_balancer_dns=$LB_DNS" >> $GITHUB_OUTPUT
         echo "instance_id=$INSTANCE_ID" >> $GITHUB_OUTPUT
         
     - name: 📊 Create Deployment Summary
@@ -213,71 +343,10 @@ jobs:
         echo "" >> $GITHUB_STEP_SUMMARY
         echo "### 📋 Informations du déploiement:" >> $GITHUB_STEP_SUMMARY
         echo "- **Instance ID:** ${{ steps.terraform-outputs.outputs.instance_id }}" >> $GITHUB_STEP_SUMMARY
-        echo "- **IP Publique:** ${{ steps.terraform-outputs.outputs.instance_ip }}" >> $GITHUB_STEP_SUMMARY
-        echo "- **URL:** http://${{ steps.terraform-outputs.outputs.instance_ip }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Load Balancer DNS:** ${{ steps.terraform-outputs.outputs.load_balancer_dns }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **URL:** http://${{ steps.terraform-outputs.outputs.load_balancer_dns }}" >> $GITHUB_STEP_SUMMARY
         echo "- **Région:** ${{ env.AWS_DEFAULT_REGION }}" >> $GITHUB_STEP_SUMMARY
         echo "- **Environnement:** production" >> $GITHUB_STEP_SUMMARY
-
-  # =============================================================================
-  # JOB 4: CONFIGURATION ANSIBLE (OPTIONNEL)
-  # =============================================================================
-  ansible-config:
-    name: ⚙️ Configuration Ansible
-    runs-on: ubuntu-latest
-    needs: terraform-apply
-    if: success() && github.ref == 'refs/heads/main'
-    
-    steps:
-    - name: 📥 Checkout code
-      uses: actions/checkout@v4
-      
-    - name: 🐍 Setup Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.11'
-        
-    - name: 📦 Install Ansible
-      run: |
-        pip install ansible==${{ env.ANSIBLE_VERSION }}
-        ansible --version
-        
-    - name: 🔑 Setup SSH Key for Ansible
-      run: |
-        mkdir -p ~/.ssh
-        echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
-        echo "${{ secrets.SSH_PUBLIC_KEY }}" > ~/.ssh/id_rsa.pub
-        chmod 600 ~/.ssh/id_rsa
-        chmod 644 ~/.ssh/id_rsa.pub
-        
-    - name: 🔐 Configure AWS Credentials
-      uses: aws-actions/configure-aws-credentials@v4
-      with:
-        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-region: ${{ env.AWS_DEFAULT_REGION }}
-        
-    - name: ⚙️ Run Ansible Playbook (Amazon Linux 2023)
-      working-directory: ./ansible
-      run: |
-        # Utiliser l'IP de l'output du job précédent
-        INSTANCE_IP="${{ needs.terraform-apply.outputs.instance_ip }}"
-        
-        # Créer l'inventaire dynamique pour Amazon Linux 2023
-        echo "[web]" > inventory/hosts
-        echo "$INSTANCE_IP" >> inventory/hosts
-        
-        # Ajouter les variables pour Amazon Linux 2023
-        echo "" >> inventory/hosts
-        echo "[web:vars]" >> inventory/hosts
-        echo "ansible_user=ec2-user" >> inventory/hosts
-        echo "ansible_ssh_private_key_file=~/.ssh/id_rsa" >> inventory/hosts
-        echo "ansible_python_interpreter=/usr/bin/python3" >> inventory/hosts
-        echo "ansible_ssh_common_args='-o StrictHostKeyChecking=no'" >> inventory/hosts
-        
-        # Exécuter le playbook pour Amazon Linux 2023 (si il existe)
-        if [ -f playbooks/site.yml ]; then
-          ansible-playbook -i inventory/hosts playbooks/site.yml
-        fi
 
   # =============================================================================
   # JOB 5: TESTS POST-DÉPLOIEMENT
@@ -292,30 +361,30 @@ jobs:
     - name: 📥 Checkout code
       uses: actions/checkout@v4
         
-    - name: 🧪 Test Web Server
+    - name: 🧪 Test Load Balancer
       run: |
-        # Récupérer l'IP de l'output du job terraform-apply
-        INSTANCE_IP="${{ needs.terraform-apply.outputs.instance_ip }}"
+        # Récupérer le DNS du Load Balancer
+        LB_DNS="${{ needs.terraform-apply.outputs.load_balancer_dns }}"
         
-        # Attendre que le serveur soit prêt (Amazon Linux 2023 + user_data)
-        echo "⏳ Attente du démarrage du serveur Amazon Linux 2023..."
-        sleep 90
+        # Attendre que le Load Balancer soit prêt
+        echo "⏳ Attente du démarrage du Load Balancer..."
+        sleep 120
         
-        # Test de connectivité HTTP sur Amazon Linux 2023
-        echo "🌐 Test de connectivité HTTP (AL2023 + Apache)..."
+        # Test de connectivité HTTP
+        echo "🌐 Test de connectivité HTTP via Load Balancer..."
         for i in {1..15}; do
-          if curl -f -s http://$INSTANCE_IP; then
-            echo "✅ Serveur web Amazon Linux 2023 accessible!"
+          if curl -f -s http://$LB_DNS; then
+            echo "✅ Load Balancer accessible!"
             break
           else
-            echo "⏳ Tentative $i/15 (AL2023 boot + user_data)..."
+            echo "⏳ Tentative $i/15..."
             sleep 20
           fi
         done
         
         # Test de contenu
         echo "📄 Test du contenu..."
-        if curl -s http://$INSTANCE_IP | grep -q "Fode-DevOps"; then
+        if curl -s http://$LB_DNS | grep -q "Fode-DevOps"; then
           echo "✅ Contenu correct détecté!"
         else
           echo "❌ Contenu incorrect!"
@@ -323,13 +392,13 @@ jobs:
         fi
 
   # =============================================================================
-  # JOB 6: TERRAFORM DESTROY (MANUEL UNIQUEMENT)
+  # JOB 6: TERRAFORM DESTROY
   # =============================================================================
   terraform-destroy:
     name: 💥 Terraform Destroy
     runs-on: ubuntu-latest
-    needs: validation
-    if: github.event.inputs.action == 'destroy'
+    needs: check-backend
+    if: needs.check-backend.outputs.backend_exists == 'true' && github.event.inputs.action == 'destroy'
     environment: destruction
     
     steps:
@@ -346,7 +415,6 @@ jobs:
         mkdir -p ~/.ssh
         echo "${{ secrets.SSH_PUBLIC_KEY }}" > ~/.ssh/id_rsa.pub
         chmod 600 ~/.ssh/id_rsa.pub
-        # Créer aussi le répertoire keys dans terraform
         mkdir -p ./terraform/keys
         cp ~/.ssh/id_rsa.pub ./terraform/keys/
         
