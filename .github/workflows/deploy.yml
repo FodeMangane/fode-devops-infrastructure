@@ -59,9 +59,24 @@ jobs:
         mkdir -p ./terraform/keys
         cp ~/.ssh/id_rsa.pub ./terraform/keys/
         
-    - name: 🔍 Terraform Format Check
+    - name: 🔍 Terraform Format et Auto-correction
       working-directory: ./terraform
-      run: terraform fmt -check -recursive
+      run: |
+        # Formater automatiquement tous les fichiers
+        terraform fmt -recursive
+        
+        # Vérifier s'il y a des changements après formatage
+        if ! git diff --quiet; then
+          echo "📝 Fichiers formatés automatiquement"
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action Auto-Format"
+          git add .
+          git commit -m "🔧 Auto-format Terraform files [skip ci]"
+          git push
+          echo "✅ Changements de formatage committés automatiquement"
+        else
+          echo "✅ Tous les fichiers sont déjà correctement formatés"
+        fi
       
     - name: ✅ Terraform Validate
       working-directory: ./terraform

@@ -153,10 +153,10 @@ resource "aws_instance" "web" {
   associate_public_ip_address = false # Pas d'IP publique directe
   user_data                   = file("${path.module}/user_data.sh")
   iam_instance_profile        = aws_iam_instance_profile.ec2_profile.name
-  
+
   # Surveillance détaillée activée
   monitoring = true
-  
+
   # EBS optimisé (si supporté par le type d'instance)
   ebs_optimized = true
 
