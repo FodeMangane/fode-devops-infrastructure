@@ -50,6 +50,15 @@ jobs:
       with:
         terraform_version: ${{ env.TF_VERSION }}
         
+    - name: 🔑 Setup SSH Key
+      run: |
+        mkdir -p ~/.ssh
+        echo "${{ secrets.SSH_PUBLIC_KEY }}" > ~/.ssh/id_rsa.pub
+        chmod 600 ~/.ssh/id_rsa.pub
+        # Créer aussi le répertoire keys dans terraform si nécessaire
+        mkdir -p ./terraform/keys
+        cp ~/.ssh/id_rsa.pub ./terraform/keys/
+        
     - name: 🔍 Terraform Format Check
       working-directory: ./terraform
       run: terraform fmt -check -recursive
@@ -85,6 +94,15 @@ jobs:
       uses: hashicorp/setup-terraform@v3
       with:
         terraform_version: ${{ env.TF_VERSION }}
+        
+    - name: 🔑 Setup SSH Key
+      run: |
+        mkdir -p ~/.ssh
+        echo "${{ secrets.SSH_PUBLIC_KEY }}" > ~/.ssh/id_rsa.pub
+        chmod 600 ~/.ssh/id_rsa.pub
+        # Créer aussi le répertoire keys dans terraform
+        mkdir -p ./terraform/keys
+        cp ~/.ssh/id_rsa.pub ./terraform/keys/
         
     - name: 🔐 Configure AWS Credentials
       uses: aws-actions/configure-aws-credentials@v4
@@ -135,6 +153,15 @@ jobs:
       with:
         terraform_version: ${{ env.TF_VERSION }}
         terraform_wrapper: false
+        
+    - name: 🔑 Setup SSH Key
+      run: |
+        mkdir -p ~/.ssh
+        echo "${{ secrets.SSH_PUBLIC_KEY }}" > ~/.ssh/id_rsa.pub
+        chmod 600 ~/.ssh/id_rsa.pub
+        # Créer aussi le répertoire keys dans terraform
+        mkdir -p ./terraform/keys
+        cp ~/.ssh/id_rsa.pub ./terraform/keys/
         
     - name: 🔐 Configure AWS Credentials
       uses: aws-actions/configure-aws-credentials@v4
@@ -199,6 +226,14 @@ jobs:
         pip install ansible==${{ env.ANSIBLE_VERSION }}
         ansible --version
         
+    - name: 🔑 Setup SSH Key for Ansible
+      run: |
+        mkdir -p ~/.ssh
+        echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+        echo "${{ secrets.SSH_PUBLIC_KEY }}" > ~/.ssh/id_rsa.pub
+        chmod 600 ~/.ssh/id_rsa
+        chmod 644 ~/.ssh/id_rsa.pub
+        
     - name: 🔐 Configure AWS Credentials
       uses: aws-actions/configure-aws-credentials@v4
       with:
@@ -222,6 +257,7 @@ jobs:
         echo "ansible_user=ec2-user" >> inventory/hosts
         echo "ansible_ssh_private_key_file=~/.ssh/id_rsa" >> inventory/hosts
         echo "ansible_python_interpreter=/usr/bin/python3" >> inventory/hosts
+        echo "ansible_ssh_common_args='-o StrictHostKeyChecking=no'" >> inventory/hosts
         
         # Exécuter le playbook pour Amazon Linux 2023 (si il existe)
         if [ -f playbooks/site.yml ]; then
@@ -289,6 +325,15 @@ jobs:
       uses: hashicorp/setup-terraform@v3
       with:
         terraform_version: ${{ env.TF_VERSION }}
+        
+    - name: 🔑 Setup SSH Key
+      run: |
+        mkdir -p ~/.ssh
+        echo "${{ secrets.SSH_PUBLIC_KEY }}" > ~/.ssh/id_rsa.pub
+        chmod 600 ~/.ssh/id_rsa.pub
+        # Créer aussi le répertoire keys dans terraform
+        mkdir -p ./terraform/keys
+        cp ~/.ssh/id_rsa.pub ./terraform/keys/
         
     - name: 🔐 Configure AWS Credentials
       uses: aws-actions/configure-aws-credentials@v4

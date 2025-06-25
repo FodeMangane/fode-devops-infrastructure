@@ -31,3 +31,9 @@ variable "key_name" {
   description = "Nom de la paire de clés Fode-DevOps"
   type        = string
 }
+
+variable "public_key_path" {
+  description = "Path to the public key file"
+  type        = string
+  default     = "C:/Users/Fode/.ssh/id_rsa.pub"
+}
