@@ -53,3 +53,9 @@ variable "key_pair_name" {
   type        = string
   default     = "fode-devops-key"
 }
+
+variable "public_key_path" {
+  description = "Chemin vers la clé publique SSH"
+  type        = string
+  default     = "~/.ssh/id_rsa.pub" # tu peux mettre un chemin par défaut
+}

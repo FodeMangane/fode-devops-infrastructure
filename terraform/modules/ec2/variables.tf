@@ -31,9 +31,3 @@ variable "key_name" {
   description = "Nom de la paire de clés Fode-DevOps"
   type        = string
 }
-
-variable "public_key_content" {
-  description = "Public key content"
-  type        = string
-  default     = ""
-}

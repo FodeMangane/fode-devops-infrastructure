@@ -154,7 +154,6 @@ cat > /var/www/html/index.html << 'EOF'
                 const token = await tokenResponse.text();
                 const headers = { 'X-aws-ec2-metadata-token': token };
                 
-                // Endpoints des métadonnées
                 const endpoints = {
                     hostname: 'http://169.254.169.254/latest/meta-data/hostname',
                     'private-ip': 'http://169.254.169.254/latest/meta-data/local-ipv4',
@@ -162,7 +161,6 @@ cat > /var/www/html/index.html << 'EOF'
                     region: 'http://169.254.169.254/latest/meta-data/placement/region'
                 };
                 
-                // Récupération des données
                 for (const [id, url] of Object.entries(endpoints)) {
                     try {
                         const response = await fetch(url, { headers });
@@ -172,10 +170,7 @@ cat > /var/www/html/index.html << 'EOF'
                         document.getElementById(id).textContent = 'N/A';
                     }
                 }
-                
-                // Informations système
                 document.getElementById('server-time').textContent = new Date().toLocaleString('fr-FR');
-                
             } catch (error) {
                 console.error('Erreur métadonnées:', error);
                 document.querySelectorAll('.info-item span').forEach(el => {
@@ -186,10 +181,7 @@ cat > /var/www/html/index.html << 'EOF'
             }
         };
         
-        // Initialisation
         document.addEventListener('DOMContentLoaded', getMetadata);
-        
-        // Mise à jour de l'heure toutes les secondes
         setInterval(() => {
             document.getElementById('server-time').textContent = new Date().toLocaleString('fr-FR');
         }, 1000);
@@ -245,15 +237,15 @@ EOF
 
 chmod +x /home/ec2-user/fode-devops-monitor.sh
 
-# Création des alias
-echo "alias monitor='/home/ec2-user/fode-devops-monitor.sh'" >> /home/ec2-user/.bashrc
-echo "alias web-status='sudo systemctl status httpd'" >> /home/ec2-user/.bashrc
-echo "alias web-restart='sudo systemctl restart httpd'" >> /home/ec2-user/.bashrc
-echo "alias web-logs='sudo tail -f /var/log/httpd/access_log'" >> /home/ec2-user/.bashrc
-
-# Messages de bienvenue
-echo "echo '🚀 Bienvenue sur l'\''infrastructure Fode-DevOps!'" >> /home/ec2-user/.bashrc
-echo "echo 'Commandes utiles: monitor, web-status, web-restart, web-logs'" >> /home/ec2-user/.bashrc
+# Création des alias et messages de bienvenue
+{
+  echo "alias monitor='/home/ec2-user/fode-devops-monitor.sh'"
+  echo "alias web-status='sudo systemctl status httpd'"
+  echo "alias web-restart='sudo systemctl restart httpd'"
+  echo "alias web-logs='sudo tail -f /var/log/httpd/access_log'"
+  printf "echo '🚀 Bienvenue sur l'infrastructure Fode-DevOps!'\n" >> /home/ec2-user/.bashrc
+  echo "echo 'Commandes utiles: monitor, web-status, web-restart, web-logs'"
+} >> /home/ec2-user/.bashrc
 
 # Log de fin d'installation
 echo "$(date): Installation Fode-DevOps terminée" >> /var/log/fode-devops-install.log

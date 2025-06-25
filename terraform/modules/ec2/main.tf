@@ -62,7 +62,7 @@ resource "aws_security_group" "web" {
 # Paire de clés Fode-DevOps
 resource "aws_key_pair" "main" {
   key_name   = var.key_name
-  public_key = var.public_key_content != "" ? var.public_key_content : tls_private_key.example.public_key_openssh
+  public_key = file("C:/Users/Fode/.ssh/id_rsa.pub")
 
   tags = {
     Name = "${var.project_name}-${var.environment}-key"
