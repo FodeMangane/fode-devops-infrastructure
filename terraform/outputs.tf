@@ -1,38 +1,51 @@
 # =============================================================================
-# OUTPUTS.TF - Sorties de l'infrastructure Fode-DevOps
+# OUTPUTS.TF - Outputs principaux Fode-DevOps Infrastructure
 # =============================================================================
 
+# Outputs VPC
 output "vpc_id" {
-  description = "ID du VPC Fode-DevOps"
+  description = "ID du VPC"
   value       = module.vpc.vpc_id
 }
 
-output "public_subnet_id" {
-  description = "ID du subnet public Fode-DevOps"
-  value       = module.vpc.public_subnet_ids[0]
+output "vpc_cidr" {
+  description = "CIDR block du VPC"
+  value       = module.vpc.vpc_cidr_block
 }
 
-output "ec2_public_ip" {
-  description = "Adresse IP publique de l'instance EC2 Fode-DevOps"
-  value       = module.ec2.public_ip
-}
-
-output "ec2_instance_id" {
-  description = "ID de l'instance EC2 Fode-DevOps"
+# Outputs EC2
+output "instance_id" {
+  description = "ID de l'instance EC2"
   value       = module.ec2.instance_id
 }
 
-output "s3_bucket_name" {
-  description = "Nom du bucket S3 Fode-DevOps"
-  value       = module.s3.bucket_name
+output "instance_private_ip" {
+  description = "IP privée de l'instance EC2"
+  value       = module.ec2.instance_private_ip
+}
+
+output "public_ip" {
+  description = "IP publique du Load Balancer"
+  value       = module.ec2.alb_dns_name
+}
+
+output "load_balancer_dns" {
+  description = "DNS du Load Balancer"
+  value       = module.ec2.alb_dns_name
 }
 
 output "website_url" {
-  description = "URL du site web Fode-DevOps"
-  value       = "http://${module.ec2.public_ip}"
+  description = "URL du site web"
+  value       = "http://${module.ec2.alb_dns_name}"
 }
 
-output "ssh_command" {
-  description = "Commande SSH pour se connecter à Fode-DevOps"
-  value       = "ssh -i ~/.ssh/id_rsa ec2-user@${module.ec2.public_ip}"
+# Outputs S3
+output "s3_bucket_name" {
+  description = "Nom du bucket S3"
+  value       = module.s3.bucket_name
+}
+
+output "s3_bucket_arn" {
+  description = "ARN du bucket S3"
+  value       = module.s3.bucket_arn
 }

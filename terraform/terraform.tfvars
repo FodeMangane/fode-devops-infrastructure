@@ -1,16 +1,14 @@
 # =============================================================================
-# TERRAFORM.TFVARS - Configuration Fode-DevOps
+# TERRAFORM.TFVARS - Variables d'environnement Fode-DevOps
 # =============================================================================
 
-aws_region   = "eu-west-1"
+# Configuration du projet
 project_name = "fode-devops"
-environment  = "prod"
+environment  = "dev"
+aws_region   = "us-east-1"
 
-# Réseau Fode-DevOps (public uniquement pour Free Tier)
-vpc_cidr           = "10.0.0.0/16"
-public_subnets     = ["10.0.1.0/24"]
-availability_zones = ["eu-west-1a"]
+# Configuration VPC
+vpc_cidr = "10.0.0.0/16"
 
-# EC2 Free Tier Fode-DevOps
-instance_type = "t3.micro"
-key_pair_name = "fode-devops-key"
+# Configuration EC2
+instance_type = "t2.micro"
