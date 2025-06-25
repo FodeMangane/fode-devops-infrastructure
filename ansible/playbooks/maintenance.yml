@@ -1,0 +1,31 @@
+# =============================================================================
+# ANSIBLE/PLAYBOOKS/MAINTENANCE.YML - Playbook de maintenance
+# =============================================================================
+---
+- name: 🔧 Maintenance infrastructure Fode-DevOps
+  hosts: fode_devops_prod
+  become: yes
+  
+  tasks:
+    - name: 🧹 Nettoyage des packages
+      dnf:
+        autoremove: yes
+        
+    - name: 🔄 Mise à jour des packages
+      dnf:
+        name: "*"
+        state: latest
+        
+    - name: 📊 Vérification de l'espace disque
+      shell: df -h /
+      register: disk_space
+      
+    - name: 📈 Affichage espace disque
+      debug:
+        msg: "{{ disk_space.stdout_lines }}"
+        
+    - name: 🔄 Redémarrage Apache si nécessaire
+      systemd:
+        name: httpd
+        state: restarted
+      when: system_update.changed

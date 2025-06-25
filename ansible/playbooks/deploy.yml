@@ -1,0 +1,35 @@
+# =============================================================================
+# ANSIBLE/PLAYBOOKS/DEPLOY.YML - Playbook de déploiement
+# =============================================================================
+---
+- name: 🚀 Déploiement application Fode-DevOps
+  hosts: fode_devops_prod
+  become: yes
+  
+  vars:
+    app_dir: /var/www/html/app
+    
+  tasks:
+    - name: 📁 Création répertoire application
+      file:
+        path: "{{ app_dir }}"
+        state: directory
+        owner: apache
+        group: apache
+        mode: '0755'
+        
+    - name: 📄 Déploiement fichiers application
+      template:
+        src: "{{ item }}.j2"
+        dest: "{{ app_dir }}/{{ item }}"
+        owner: apache
+        group: apache
+        mode: '0644'
+      loop:
+        - index.html
+        - about.html
+        
+    - name: 🔄 Redémarrage Apache
+      systemd:
+        name: httpd
+        state: restarted

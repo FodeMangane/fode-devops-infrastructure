@@ -1,0 +1,335 @@
+# =============================================================================
+# DEPLOY.YML - GitHub Actions Workflow pour Fode-DevOps Infrastructure
+# =============================================================================
+
+name: 🚀 Fode-DevOps Infrastructure Deployment
+
+on:
+  push:
+    branches: [ main, develop ]
+    paths:
+      - 'terraform/**'
+      - 'ansible/**'
+      - '.github/workflows/**'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'terraform/**'
+      - 'ansible/**'
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Action à effectuer'
+        required: true
+        default: 'plan'
+        type: choice
+        options:
+          - plan
+          - apply
+          - destroy
+
+env:
+  TF_VERSION: '1.6.0'
+  ANSIBLE_VERSION: '2.15'
+  AWS_DEFAULT_REGION: 'us-east-1'
+
+jobs:
+  # =============================================================================
+  # JOB 1: VALIDATION ET SÉCURITÉ
+  # =============================================================================
+  validation:
+    name: 🔍 Validation et Sécurité
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+      
+    - name: 🔧 Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: ${{ env.TF_VERSION }}
+        
+    - name: 🔍 Terraform Format Check
+      working-directory: ./terraform
+      run: terraform fmt -check -recursive
+      
+    - name: ✅ Terraform Validate
+      working-directory: ./terraform
+      run: |
+        terraform init -backend=false
+        terraform validate
+        
+    - name: 🔒 Security Scan avec Checkov
+      uses: bridgecrewio/checkov-action@master
+      with:
+        directory: ./terraform
+        framework: terraform
+        output_format: sarif
+        output_file_path: checkov-results.sarif
+        
+    - name: 📊 Upload Checkov results
+      uses: github/codeql-action/upload-sarif@v2
+      if: always()
+      with:
+        sarif_file: checkov-results.sarif
+
+  # =============================================================================
+  # JOB 2: TERRAFORM PLAN
+  # =============================================================================
+  terraform-plan:
+    name: 📋 Terraform Plan
+    runs-on: ubuntu-latest
+    needs: validation
+    if: github.event_name == 'pull_request' || github.event.inputs.action == 'plan'
+    
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+      
+    - name: 🔧 Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: ${{ env.TF_VERSION }}
+        
+    - name: 🔐 Configure AWS Credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_DEFAULT_REGION }}
+        
+    - name: 📦 Terraform Init
+      working-directory: ./terraform
+      run: terraform init
+      
+    - name: 📋 Terraform Plan
+      working-directory: ./terraform
+      run: |
+        terraform plan -out=tfplan \
+          -var="project_name=fode-devops" \
+          -var="environment=${{ github.ref_name }}" \
+          -var="aws_region=${{ env.AWS_DEFAULT_REGION }}" \
+          -var="instance_type=t2.micro" \
+          -var="key_pair_name=fode-devops-key"
+          
+    - name: 💾 Save Terraform Plan
+      uses: actions/upload-artifact@v3
+      with:
+        name: terraform-plan
+        path: ./terraform/tfplan
+        retention-days: 30
+
+  # =============================================================================
+  # JOB 3: TERRAFORM APPLY
+  # =============================================================================
+  terraform-apply:
+    name: 🚀 Terraform Apply
+    runs-on: ubuntu-latest
+    needs: [validation, terraform-plan]
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event.inputs.action == 'apply')
+    environment: production
+    
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+      
+    - name: 🔧 Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: ${{ env.TF_VERSION }}
+        
+    - name: 🔐 Configure AWS Credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_DEFAULT_REGION }}
+        
+    - name: 📦 Terraform Init
+      working-directory: ./terraform
+      run: terraform init
+      
+    - name: 🚀 Terraform Apply
+      working-directory: ./terraform
+      run: |
+        terraform apply -auto-approve \
+          -var="project_name=fode-devops" \
+          -var="environment=production" \
+          -var="aws_region=${{ env.AWS_DEFAULT_REGION }}" \
+          -var="instance_type=t2.micro" \
+          -var="key_pair_name=fode-devops-key"
+          
+    - name: 📤 Export Terraform Outputs
+      working-directory: ./terraform
+      run: |
+        echo "INSTANCE_IP=$(terraform output -raw public_ip)" >> $GITHUB_ENV
+        echo "INSTANCE_ID=$(terraform output -raw instance_id)" >> $GITHUB_ENV
+        
+    - name: 📊 Create Deployment Summary
+      run: |
+        echo "## 🚀 Déploiement Fode-DevOps Réussi!" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### 📋 Informations du déploiement:" >> $GITHUB_STEP_SUMMARY
+        echo "- **Instance ID:** ${{ env.INSTANCE_ID }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **IP Publique:** ${{ env.INSTANCE_IP }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **URL:** http://${{ env.INSTANCE_IP }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Région:** ${{ env.AWS_DEFAULT_REGION }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Environnement:** production" >> $GITHUB_STEP_SUMMARY
+
+  # =============================================================================
+  # JOB 4: CONFIGURATION ANSIBLE (OPTIONNEL)
+  # =============================================================================
+  ansible-config:
+    name: ⚙️ Configuration Ansible
+    runs-on: ubuntu-latest
+    needs: terraform-apply
+    if: success() && github.ref == 'refs/heads/main'
+    
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+      
+    - name: 🐍 Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+        
+    - name: 📦 Install Ansible
+      run: |
+        pip install ansible==${{ env.ANSIBLE_VERSION }}
+        ansible --version
+        
+    - name: 🔐 Configure AWS Credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_DEFAULT_REGION }}
+        
+    - name: ⚙️ Run Ansible Playbook (Amazon Linux 2023)
+      working-directory: ./ansible
+      run: |
+        # Créer l'inventaire dynamique pour Amazon Linux 2023
+        echo "[web]" > inventory/hosts
+        aws ec2 describe-instances \
+          --filters "Name=tag:Name,Values=fode-devops-production-web-server" \
+                   "Name=instance-state-name,Values=running" \
+          --query 'Reservations[*].Instances[*].PublicIpAddress' \
+          --output text >> inventory/hosts
+        
+        # Ajouter les variables pour Amazon Linux 2023
+        echo "" >> inventory/hosts
+        echo "[web:vars]" >> inventory/hosts
+        echo "ansible_user=ec2-user" >> inventory/hosts
+        echo "ansible_ssh_private_key_file=~/.ssh/id_rsa" >> inventory/hosts
+        echo "ansible_python_interpreter=/usr/bin/python3" >> inventory/hosts
+        
+        # Exécuter le playbook pour Amazon Linux 2023 (si il existe)
+        if [ -f playbooks/site.yml ]; then
+          ansible-playbook -i inventory/hosts playbooks/site.yml
+        fi
+
+  # =============================================================================
+  # JOB 5: TESTS POST-DÉPLOIEMENT
+  # =============================================================================
+  post-deployment-tests:
+    name: 🧪 Tests Post-Déploiement
+    runs-on: ubuntu-latest
+    needs: terraform-apply
+    if: success()
+    
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+      
+    - name: 🔐 Configure AWS Credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_DEFAULT_REGION }}
+        
+    - name: 📡 Get Instance IP
+      run: |
+        INSTANCE_IP=$(aws ec2 describe-instances \
+          --filters "Name=tag:Name,Values=fode-devops-production-web-server" \
+                   "Name=instance-state-name,Values=running" \
+          --query 'Reservations[*].Instances[*].PublicIpAddress' \
+          --output text)
+        echo "INSTANCE_IP=$INSTANCE_IP" >> $GITHUB_ENV
+        
+    - name: 🧪 Test Web Server
+      run: |
+        # Attendre que le serveur soit prêt (Amazon Linux 2023 + user_data)
+        echo "⏳ Attente du démarrage du serveur Amazon Linux 2023..."
+        sleep 90
+        
+        # Test de connectivité HTTP sur Amazon Linux 2023
+        echo "🌐 Test de connectivité HTTP (AL2023 + Apache)..."
+        for i in {1..15}; do
+          if curl -f -s http://${{ env.INSTANCE_IP }}; then
+            echo "✅ Serveur web Amazon Linux 2023 accessible!"
+            break
+          else
+            echo "⏳ Tentative $i/15 (AL2023 boot + user_data)..."
+            sleep 20
+          fi
+        done
+        
+        # Test de contenu
+        echo "📄 Test du contenu..."
+        if curl -s http://${{ env.INSTANCE_IP }} | grep -q "Fode-DevOps"; then
+          echo "✅ Contenu correct détecté!"
+        else
+          echo "❌ Contenu incorrect!"
+          exit 1
+        fi
+
+  # =============================================================================
+  # JOB 6: TERRAFORM DESTROY (MANUEL UNIQUEMENT)
+  # =============================================================================
+  terraform-destroy:
+    name: 💥 Terraform Destroy
+    runs-on: ubuntu-latest
+    needs: validation
+    if: github.event.inputs.action == 'destroy'
+    environment: destruction
+    
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+      
+    - name: 🔧 Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: ${{ env.TF_VERSION }}
+        
+    - name: 🔐 Configure AWS Credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_DEFAULT_REGION }}
+        
+    - name: 📦 Terraform Init
+      working-directory: ./terraform
+      run: terraform init
+      
+    - name: 💥 Terraform Destroy
+      working-directory: ./terraform
+      run: |
+        terraform destroy -auto-approve \
+          -var="project_name=fode-devops" \
+          -var="environment=production" \
+          -var="aws_region=${{ env.AWS_DEFAULT_REGION }}" \
+          -var="instance_type=t2.micro" \
+          -var="key_pair_name=fode-devops-key"
+          
+    - name: 📊 Destruction Summary
+      run: |
+        echo "## 💥 Infrastructure Fode-DevOps Détruite!" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### ⚠️ Toutes les ressources ont été supprimées" >> $GITHUB_STEP_SUMMARY
+        echo "- **Région:** ${{ env.AWS_DEFAULT_REGION }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Projet:** fode-devops" >> $GITHUB_STEP_SUMMARY

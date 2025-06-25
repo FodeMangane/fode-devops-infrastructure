@@ -1,0 +1,57 @@
+# =============================================================================
+# ANSIBLE/PLAYBOOKS/TEMPLATES/MONITOR.SH.J2 - Template monitoring
+# =============================================================================
+#!/bin/bash
+# Script de monitoring Ansible Fode-DevOps
+
+echo "================================================"
+echo "🚀 FODE-DEVOPS ANSIBLE MONITORING SYSTEM"
+echo "================================================"
+echo "Projet: {{ project_name }}-{{ environment }}"
+echo "Serveur: {{ inventory_hostname }}"
+echo "Date: $(date)"
+echo "Géré par: Ansible + Terraform"
+echo "================================================"
+
+echo ""
+echo "📊 INFORMATIONS SYSTÈME:"
+echo "Hostname: $(hostname)"
+echo "OS: $(cat /etc/os-release | grep PRETTY_NAME | cut -d'=' -f2 | tr -d '\"')"
+echo "Kernel: $(uname -r)"
+echo "Uptime: $(uptime | cut -d',' -f1 | cut -d' ' -f4-)"
+
+echo ""
+echo "💾 MÉMOIRE:"
+free -h
+
+echo ""
+echo "💿 STOCKAGE:"
+df -h /
+
+echo ""
+echo "🔥 CPU:"
+echo "Load Average: $(cat /proc/loadavg | cut -d' ' -f1-3)"
+echo "CPU Usage: $(top -bn1 | grep "Cpu(s)" | awk '{print $2}' | cut -d'%' -f1)%"
+
+echo ""
+echo "🌐 RÉSEAU:"
+echo "IP Privée: $(curl -s http://169.254.169.254/latest/meta-data/local-ipv4 2>/dev/null || echo 'N/A')"
+echo "IP Publique: $(curl -s http://169.254.169.254/latest/meta-data/public-ipv4 2>/dev/null || echo 'N/A')"
+
+echo ""
+echo "🔄 SERVICES:"
+systemctl is-active httpd >/dev/null && echo "✅ Apache: Active" || echo "❌ Apache: Inactive"
+systemctl is-active sshd >/dev/null && echo "✅ SSH: Active" || echo "❌ SSH: Inactive"
+
+echo ""
+echo "📦 PACKAGES INSTALLÉS (derniers):"
+dnf list installed | grep -E "(git|curl|htop|nodejs)" | head -5
+
+echo ""
+echo "🏷️ TAGS AWS:"
+aws ec2 describe-tags --region {{ aws_region }} --filters "Name=resource-id,Values={{ instance_id }}" --query 'Tags[*].[Key,Value]' --output table 2>/dev/null || echo "Impossible de récupérer les tags"
+
+echo ""
+echo "================================================"
+echo "✅ Monitoring terminé - Infrastructure Fode-DevOps"
+echo "================================================"

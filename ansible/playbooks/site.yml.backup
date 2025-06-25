@@ -1,0 +1,119 @@
+# =============================================================================
+# ANSIBLE/PLAYBOOKS/SITE.YML - Playbook principal Fode-DevOps
+# =============================================================================
+---
+- name: 🚀 Configuration complète infrastructure Fode-DevOps
+  hosts: fode_devops_prod
+  become: yes
+  gather_facts: yes
+  
+  vars:
+    fode_devops_banner: |
+      
+      ======================================
+      🚀 FODE-DEVOPS ANSIBLE AUTOMATION 🚀
+      ======================================
+      Infrastructure: {{ project_name }}-{{ environment }}
+      Date: {{ ansible_date_time.date }}
+      Serveur: {{ inventory_hostname }}
+      ======================================
+      
+  tasks:
+    - name: 📢 Affichage bannière Fode-DevOps
+      debug:
+        msg: "{{ fode_devops_banner }}"
+    
+    - name: 📊 Collecte des informations système
+      setup:
+        gather_subset:
+          - hardware
+          - network
+          - virtual
+    
+    - name: 🔄 Mise à jour du système
+      dnf:
+        name: "*"
+        state: latest
+        update_cache: yes
+      register: system_update
+    
+    - name: 📦 Installation des packages Fode-DevOps
+      dnf:
+        name: "{{ packages }}"
+        state: present
+    
+    - name: 🌐 Vérification du service Apache
+      systemd:
+        name: httpd
+        state: started
+        enabled: yes
+    
+    - name: 📝 Création du script de monitoring Fode-DevOps
+      template:
+        src: monitor.sh.j2
+        dest: /home/ec2-user/fode-devops-monitor-ansible.sh
+        mode: '0755'
+        owner: ec2-user
+        group: ec2-user
+    
+    - name: 🔧 Configuration du firewall
+      firewalld:
+        port: "{{ item }}/tcp"
+        permanent: yes
+        state: enabled
+        immediate: yes
+      loop:
+        - "{{ web_port }}"
+        - "{{ ssl_port }}"
+      ignore_errors: yes
+    
+    - name: 📄 Création page de test Ansible
+      template:
+        src: ansible-test.html.j2
+        dest: /var/www/html/ansible-test.html
+        mode: '0644'
+        owner: apache
+        group: apache
+    
+    - name: 🏷️ Ajout de tags AWS via CLI
+      shell: |
+        aws ec2 create-tags --region {{ aws_region }} \
+        --resources {{ instance_id }} \
+        --tags Key=ManagedBy,Value=Ansible Key=UpdatedBy,Value=Fode-DevOps-Ansible
+      environment:
+        AWS_DEFAULT_REGION: "{{ aws_region }}"
+      ignore_errors: yes
+    
+    - name: 📊 Collecte des métriques système
+      shell: |
+        echo "=== FODE-DEVOPS SYSTEM METRICS ==="
+        echo "Uptime: $(uptime)"
+        echo "Memory: $(free -h | grep Mem)"
+        echo "Disk: $(df -h / | tail -1)"
+        echo "Load: $(cat /proc/loadavg)"
+        echo "Processes: $(ps aux | wc -l)"
+      register: system_metrics
+    
+    - name: 📈 Affichage des métriques
+      debug:
+        msg: "{{ system_metrics.stdout_lines }}"
+    
+    - name: ✅ Validation finale
+      uri:
+        url: "http://{{ ansible_host }}/ansible-test.html"
+        method: GET
+        status_code: 200
+      delegate_to: localhost
+      register: web_check
+    
+    - name: 🎉 Message de succès Fode-DevOps
+      debug:
+        msg: |
+          
+          ✅ Configuration Ansible terminée avec succès !
+          
+          🌐 Site web: http://{{ ansible_host }}
+          🧪 Page test: http://{{ ansible_host }}/ansible-test.html
+          📊 Monitoring: ssh ec2-user@{{ ansible_host }} './fode-devops-monitor-ansible.sh'
+          
+          🚀 Infrastructure Fode-DevOps opérationnelle !
