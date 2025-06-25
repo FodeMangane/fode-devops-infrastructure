@@ -1,39 +1,50 @@
 # =============================================================================
-# MODULES/EC2/VARIABLES.TF
+# MODULES/EC2/VARIABLES.TF - Variables pour Module EC2 Sécurisé
 # =============================================================================
 
 variable "project_name" {
-  description = "Nom du projet Fode-DevOps"
+  description = "Nom du projet"
   type        = string
 }
 
 variable "environment" {
-  description = "Environnement Fode-DevOps"
+  description = "Environnement (dev, staging, prod)"
   type        = string
 }
 
 variable "vpc_id" {
-  description = "ID du VPC Fode-DevOps"
+  description = "ID du VPC"
   type        = string
 }
 
-variable "public_subnet_id" {
-  description = "ID du subnet public Fode-DevOps"
+variable "vpc_cidr" {
+  description = "CIDR block du VPC"
   type        = string
+}
+
+variable "private_subnet_id" {
+  description = "ID du subnet privé pour l'instance EC2"
+  type        = string
+}
+
+variable "public_subnets" {
+  description = "Liste des IDs des subnets publics pour l'ALB"
+  type        = list(string)
 }
 
 variable "instance_type" {
-  description = "Type d'instance EC2 Fode-DevOps"
+  description = "Type d'instance EC2"
   type        = string
+  default     = "t3.micro" # ou t2.micro pour Free Tier
 }
 
 variable "key_name" {
-  description = "Nom de la paire de clés Fode-DevOps"
+  description = "Nom de la paire de clés SSH"
   type        = string
 }
 
-variable "public_key_path" {
-  description = "Path to the public key file"
+variable "allowed_ssh_cidr" {
+  description = "CIDR autorisé pour SSH"
   type        = string
-  default     = "C:/Users/Fode/.ssh/id_rsa.pub"
+  default     = "0.0.0.0/0" # À changer en production
 }
