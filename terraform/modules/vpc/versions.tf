@@ -7,19 +7,19 @@
 terraform {
   # Version minimale de Terraform requise
   required_version = ">= 1.0"
-  
+
   # Configuration des providers requis
   required_providers {
     # Provider AWS - Infrastructure cloud
     aws = {
       source  = "hashicorp/aws"
-      version = "~> 5.0"  # Version 5.x la plus récente (compatible)
+      version = "~> 5.0" # Version 5.x la plus récente (compatible)
     }
-    
+
     # Provider Random - Génération de valeurs aléatoires
     random = {
       source  = "hashicorp/random"
-      version = "~> 3.4"  # Version 3.4.x la plus récente
+      version = "~> 3.4" # Version 3.4.x la plus récente
     }
   }
 }

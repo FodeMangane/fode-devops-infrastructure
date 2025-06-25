@@ -12,5 +12,5 @@ public_subnets     = ["10.0.1.0/24"]
 availability_zones = ["eu-west-1a"]
 
 # EC2 Free Tier Fode-DevOps
-instance_type   = "t3.micro"
-key_pair_name   = "fode-devops-key"
+instance_type = "t3.micro"
+key_pair_name = "fode-devops-key"
