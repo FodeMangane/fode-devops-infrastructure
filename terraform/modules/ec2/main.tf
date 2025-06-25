@@ -1,5 +1,5 @@
 # =============================================================================
-# MODULES/EC2/MAIN.TF - Module EC2 Fode-DevOps
+# MODULES/EC2/MAIN.TF - Module EC2 Fode-DevOps (corrigé)
 # =============================================================================
 
 # AMI Amazon Linux 2023 (gratuite)
@@ -44,10 +44,11 @@ resource "aws_security_group" "web" {
     from_port   = 22
     to_port     = 22
     protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"] # À restreindre à votre IP en production
+    cidr_blocks = ["0.0.0.0/0"]
   }
 
   egress {
+    description = "Allow all outbound traffic"
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
@@ -64,7 +65,6 @@ resource "aws_key_pair" "main" {
   key_name   = var.key_name
   public_key = file("${path.module}/../../keys/id_rsa.pub")
 
-
   tags = {
     Name = "${var.project_name}-${var.environment}-key"
   }
@@ -78,12 +78,20 @@ resource "aws_instance" "web" {
   subnet_id                   = var.public_subnet_id
   vpc_security_group_ids      = [aws_security_group.web.id]
   associate_public_ip_address = true
-  user_data                   = file("${path.module}/user_data.sh")
+  monitoring                  = true  # Correction pour CKV_AWS_126
+  ebs_optimized               = true  # Correction pour CKV_AWS_135
+
+  user_data = file("${path.module}/user_data.sh")
 
   root_block_device {
     volume_type = "gp3"
     volume_size = 30 # Free Tier: jusqu'à 30 GB
     encrypted   = true
+  }
+
+  metadata_options {
+    http_tokens   = "required"  # Forcer IMDSv2
+    http_endpoint = "enabled"
   }
 
   tags = {
