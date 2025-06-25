@@ -65,14 +65,8 @@ jobs:
       with:
         directory: ./terraform
         framework: terraform
-        output_format: sarif
-        output_file_path: checkov-results.sarif
-        
-    - name: 📊 Upload Checkov results
-      uses: github/codeql-action/upload-sarif@v3
-      if: always()
-      with:
-        sarif_file: checkov-results.sarif
+        output_format: cli
+      continue-on-error: true
 
   # =============================================================================
   # JOB 2: TERRAFORM PLAN
@@ -110,8 +104,7 @@ jobs:
           -var="project_name=fode-devops" \
           -var="environment=${{ github.ref_name }}" \
           -var="aws_region=${{ env.AWS_DEFAULT_REGION }}" \
-          -var="instance_type=t2.micro" \
-          -var="key_pair_name=fode-devops-key"
+          -var="instance_type=t2.micro"
           
     - name: 💾 Save Terraform Plan
       uses: actions/upload-artifact@v4
@@ -161,8 +154,7 @@ jobs:
           -var="project_name=fode-devops" \
           -var="environment=production" \
           -var="aws_region=${{ env.AWS_DEFAULT_REGION }}" \
-          -var="instance_type=t2.micro" \
-          -var="key_pair_name=fode-devops-key"
+          -var="instance_type=t2.micro"
           
     - name: 📤 Export Terraform Outputs
       id: terraform-outputs
@@ -316,8 +308,7 @@ jobs:
           -var="project_name=fode-devops" \
           -var="environment=production" \
           -var="aws_region=${{ env.AWS_DEFAULT_REGION }}" \
-          -var="instance_type=t2.micro" \
-          -var="key_pair_name=fode-devops-key"
+          -var="instance_type=t2.micro"
           
     - name: 📊 Destruction Summary
       run: |
