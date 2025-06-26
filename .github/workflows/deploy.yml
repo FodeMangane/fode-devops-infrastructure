@@ -43,7 +43,7 @@ jobs:
   create-backend:
     name: 🏗️ Créer Backend S3
     runs-on: ubuntu-latest
-    if: github.event.inputs.action == 'create-backend'
+    if: github.event_name == 'push' || github.event.inputs.action == 'create-backend'
     
     steps:
     - name: 📥 Checkout code
