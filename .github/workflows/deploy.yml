@@ -271,11 +271,13 @@ jobs:
       run: |
         # Déterminer l'environnement basé sur la branche ou l'input
         if [ "${{ github.event.inputs.action }}" != "" ]; then
-          ENVIRONMENT="production"
+          ENVIRONMENT="prod"  # Changé de "production" à "prod"
         elif [ "${{ github.ref_name }}" = "main" ]; then
-          ENVIRONMENT="production"
+          ENVIRONMENT="prod"  # Changé de "production" à "prod"
+        elif [ "${{ github.ref_name }}" = "staging" ]; then
+          ENVIRONMENT="staging"
         else
-          ENVIRONMENT="${{ github.ref_name }}"
+          ENVIRONMENT="dev"   # Par défaut pour les autres branches
         fi
         
         echo "🎯 Planification pour l'environnement: $ENVIRONMENT"
@@ -292,7 +294,7 @@ jobs:
         name: terraform-plan
         path: ./terraform/tfplan
         retention-days: 30
-
+        
   # =============================================================================
   # JOB 4: TERRAFORM APPLY
   # =============================================================================
