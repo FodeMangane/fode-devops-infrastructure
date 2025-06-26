@@ -24,31 +24,6 @@ terraform {
   }
 }
 
-# Table DynamoDB pour le verrouillage Terraform
-resource "aws_dynamodb_table" "terraform_locks" {
-  name         = "fode-devops-terraform-locks"
-  billing_mode = "PAY_PER_REQUEST" # Free Tier friendly
-  hash_key     = "LockID"
-
-  attribute {
-    name = "LockID"
-    type = "S"
-  }
-
-  tags = {
-    Name        = "Terraform State Locks"
-    Project     = "Fode-DevOps"
-    Environment = "prod"
-    ManagedBy   = "Terraform"
-    FreeTier    = "true"
-  }
-
-  # Prévention de la suppression accidentelle
-  lifecycle {
-    prevent_destroy = true
-  }
-}
-
 # Provider AWS
 provider "aws" {
   region = var.aws_region

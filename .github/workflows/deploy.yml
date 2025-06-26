@@ -28,17 +28,113 @@ on:
           - apply
           - destroy
           - create-backend
+          - fix-backend
 
 env:
   TF_VERSION: '1.6.0'
   ANSIBLE_VERSION: '2.15'
-  AWS_DEFAULT_REGION: 'eu-west-1'
+  AWS_DEFAULT_REGION: 'eu-west-1'  # ✅ Région cohérente
   BACKEND_BUCKET: 'fode-devops-terraform-state'
   DYNAMODB_TABLE: 'fode-devops-terraform-locks'
 
 jobs:
   # =============================================================================
-  # JOB 0: CRÉATION DU BACKEND S3 (SI NÉCESSAIRE)
+  # JOB 0: CORRECTION/NETTOYAGE DU BACKEND (NOUVEAU)
+  # =============================================================================
+  fix-backend:
+    name: 🔧 Corriger Backend
+    runs-on: ubuntu-latest
+    if: github.event.inputs.action == 'fix-backend'
+    
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+      
+    - name: 🔐 Configure AWS Credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_DEFAULT_REGION }}
+        
+    - name: 🧹 Nettoyer les ressources DynamoDB en conflit
+      run: |
+        echo "🔍 Vérification des tables DynamoDB existantes..."
+        
+        # Lister toutes les tables DynamoDB
+        aws dynamodb list-tables --region $AWS_DEFAULT_REGION
+        
+        # Vérifier si la table existe dans eu-west-1
+        if aws dynamodb describe-table --table-name $DYNAMODB_TABLE --region $AWS_DEFAULT_REGION 2>/dev/null; then
+          echo "✅ Table DynamoDB existe déjà dans $AWS_DEFAULT_REGION"
+        else
+          echo "❌ Table DynamoDB n'existe pas dans $AWS_DEFAULT_REGION"
+          
+          # Vérifier si elle existe dans us-east-1
+          if aws dynamodb describe-table --table-name $DYNAMODB_TABLE --region us-east-1 2>/dev/null; then
+            echo "⚠️ Table trouvée dans us-east-1, suppression recommandée"
+            echo "Pour supprimer manuellement:"
+            echo "aws dynamodb delete-table --table-name $DYNAMODB_TABLE --region us-east-1"
+          fi
+        fi
+        
+    - name: 🔧 Recréer le backend dans la bonne région
+      run: |
+        # Créer le bucket S3 pour l'état Terraform
+        echo "📦 Création du bucket S3: $BACKEND_BUCKET"
+        if ! aws s3 ls s3://$BACKEND_BUCKET 2>/dev/null; then
+          aws s3 mb s3://$BACKEND_BUCKET --region $AWS_DEFAULT_REGION
+          echo "✅ Bucket S3 créé"
+        else
+          echo "✅ Bucket S3 existe déjà"
+        fi
+        
+        # Activer le versioning
+        aws s3api put-bucket-versioning \
+          --bucket $BACKEND_BUCKET \
+          --versioning-configuration Status=Enabled
+        
+        # Activer le chiffrement
+        aws s3api put-bucket-encryption \
+          --bucket $BACKEND_BUCKET \
+          --server-side-encryption-configuration '{
+            "Rules": [
+              {
+                "ApplyServerSideEncryptionByDefault": {
+                  "SSEAlgorithm": "AES256"
+                }
+              }
+            ]
+          }'
+        
+        # Bloquer l'accès public
+        aws s3api put-public-access-block \
+          --bucket $BACKEND_BUCKET \
+          --public-access-block-configuration \
+          BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
+        
+        # Créer la table DynamoDB dans la bonne région
+        echo "🔐 Création de la table DynamoDB: $DYNAMODB_TABLE dans $AWS_DEFAULT_REGION"
+        if ! aws dynamodb describe-table --table-name $DYNAMODB_TABLE --region $AWS_DEFAULT_REGION 2>/dev/null; then
+          aws dynamodb create-table \
+            --table-name $DYNAMODB_TABLE \
+            --attribute-definitions AttributeName=LockID,AttributeType=S \
+            --key-schema AttributeName=LockID,KeyType=HASH \
+            --provisioned-throughput ReadCapacityUnits=5,WriteCapacityUnits=5 \
+            --region $AWS_DEFAULT_REGION \
+            --tags Key=Name,Value="Terraform State Lock" Key=Project,Value="Fode-DevOps"
+          
+          # Attendre que la table soit active
+          aws dynamodb wait table-exists --table-name $DYNAMODB_TABLE --region $AWS_DEFAULT_REGION
+          echo "✅ Table DynamoDB créée dans $AWS_DEFAULT_REGION"
+        else
+          echo "✅ Table DynamoDB existe déjà dans $AWS_DEFAULT_REGION"
+        fi
+        
+        echo "🎉 Backend corrigé avec succès!"
+
+  # =============================================================================
+  # JOB 1: CRÉATION DU BACKEND S3 (SI NÉCESSAIRE)
   # =============================================================================
   create-backend:
     name: 🏗️ Créer Backend S3
@@ -91,7 +187,7 @@ jobs:
           --public-access-block-configuration \
           BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
         
-        # Créer la table DynamoDB
+        # Créer la table DynamoDB dans la bonne région
         echo "🔐 Création de la table DynamoDB: $DYNAMODB_TABLE"
         if ! aws dynamodb describe-table --table-name $DYNAMODB_TABLE --region $AWS_DEFAULT_REGION 2>/dev/null; then
           aws dynamodb create-table \
@@ -112,12 +208,12 @@ jobs:
         echo "🎉 Backend infrastructure créée avec succès!"
 
   # =============================================================================
-  # JOB 1: VÉRIFICATION DU BACKEND
+  # JOB 2: VÉRIFICATION DU BACKEND
   # =============================================================================
   check-backend:
     name: 🔍 Vérifier Backend
     runs-on: ubuntu-latest
-    if: github.event.inputs.action != 'create-backend'
+    if: github.event.inputs.action != 'create-backend' && github.event.inputs.action != 'fix-backend'
     outputs:
       backend_exists: ${{ steps.check.outputs.backend_exists }}
     
@@ -143,12 +239,12 @@ jobs:
           S3_EXISTS=false
         fi
         
-        # Vérifier la table DynamoDB
+        # Vérifier la table DynamoDB dans la bonne région
         if aws dynamodb describe-table --table-name $DYNAMODB_TABLE --region $AWS_DEFAULT_REGION 2>/dev/null; then
-          echo "✅ Table DynamoDB existe"
+          echo "✅ Table DynamoDB existe dans $AWS_DEFAULT_REGION"
           DYNAMODB_EXISTS=true
         else
-          echo "❌ Table DynamoDB n'existe pas"
+          echo "❌ Table DynamoDB n'existe pas dans $AWS_DEFAULT_REGION"
           DYNAMODB_EXISTS=false
         fi
         
@@ -159,13 +255,13 @@ jobs:
           echo "backend_exists=false" >> $GITHUB_OUTPUT
           echo "❌ Backend infrastructure manquante"
           echo ""
-          echo "Pour créer le backend, exécutez:"
-          echo "gh workflow run deploy.yml --field action=create-backend"
+          echo "Pour corriger le backend, exécutez:"
+          echo "gh workflow run deploy.yml --field action=fix-backend"
           exit 1
         fi
 
   # =============================================================================
-  # JOB 2: VALIDATION ET SÉCURITÉ
+  # JOB 3: VALIDATION ET SÉCURITÉ
   # =============================================================================
   validation:
     name: 🔍 Validation et Sécurité
@@ -225,7 +321,7 @@ jobs:
       continue-on-error: true
 
   # =============================================================================
-  # JOB 3: TERRAFORM PLAN
+  # JOB 4: TERRAFORM PLAN
   # =============================================================================
   terraform-plan:
     name: 📋 Terraform Plan
@@ -236,7 +332,8 @@ jobs:
       (needs.check-backend.result == 'success' || needs.check-backend.result == 'skipped') &&
       needs.validation.result == 'success' &&
       github.event.inputs.action != 'create-backend' &&
-      github.event.inputs.action != 'destroy'
+      github.event.inputs.action != 'destroy' &&
+      github.event.inputs.action != 'fix-backend'
     
     steps:
     - name: 📥 Checkout code
@@ -271,13 +368,13 @@ jobs:
       run: |
         # Déterminer l'environnement basé sur la branche ou l'input
         if [ "${{ github.event.inputs.action }}" != "" ]; then
-          ENVIRONMENT="prod"  # Changé de "production" à "prod"
+          ENVIRONMENT="prod"
         elif [ "${{ github.ref_name }}" = "main" ]; then
-          ENVIRONMENT="prod"  # Changé de "production" à "prod"
+          ENVIRONMENT="prod"
         elif [ "${{ github.ref_name }}" = "staging" ]; then
           ENVIRONMENT="staging"
         else
-          ENVIRONMENT="dev"   # Par défaut pour les autres branches
+          ENVIRONMENT="dev"
         fi
         
         echo "🎯 Planification pour l'environnement: $ENVIRONMENT"
@@ -294,8 +391,9 @@ jobs:
         name: terraform-plan
         path: ./terraform/tfplan
         retention-days: 30
+
   # =============================================================================
-  # JOB 4: TERRAFORM APPLY
+  # JOB 5: TERRAFORM APPLY
   # =============================================================================
   terraform-apply:
     name: 🚀 Terraform Apply
@@ -411,7 +509,7 @@ jobs:
         echo "- **Environnement:** $ENVIRONMENT" >> $GITHUB_STEP_SUMMARY
 
   # =============================================================================
-  # JOB 5: TESTS POST-DÉPLOIEMENT
+  # JOB 6: TESTS POST-DÉPLOIEMENT
   # =============================================================================
   post-deployment-tests:
     name: 🧪 Tests Post-Déploiement
@@ -462,7 +560,7 @@ jobs:
         fi
 
   # =============================================================================
-  # JOB 6: TERRAFORM DESTROY
+  # JOB 7: TERRAFORM DESTROY
   # =============================================================================
   terraform-destroy:
     name: 💥 Terraform Destroy
@@ -507,7 +605,7 @@ jobs:
       run: |
         terraform destroy -auto-approve \
           -var="project_name=fode-devops" \
-          -var="environment=production" \
+          -var="environment=prod" \
           -var="aws_region=${{ env.AWS_DEFAULT_REGION }}" \
           -var="instance_type=t2.micro"
           
