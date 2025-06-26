@@ -26,9 +26,9 @@ terraform {
 
 # Table DynamoDB pour le verrouillage Terraform
 resource "aws_dynamodb_table" "terraform_locks" {
-  name           = "fode-devops-terraform-locks"
-  billing_mode   = "PAY_PER_REQUEST"  # Free Tier friendly
-  hash_key       = "LockID"
+  name         = "fode-devops-terraform-locks"
+  billing_mode = "PAY_PER_REQUEST" # Free Tier friendly
+  hash_key     = "LockID"
 
   attribute {
     name = "LockID"
