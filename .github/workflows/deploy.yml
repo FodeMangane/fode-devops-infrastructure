@@ -32,7 +32,7 @@ on:
 env:
   TF_VERSION: '1.6.0'
   ANSIBLE_VERSION: '2.15'
-  AWS_DEFAULT_REGION: 'us-east-1'
+  AWS_DEFAULT_REGION: 'eu-west-1'
   BACKEND_BUCKET: 'fode-devops-terraform-state'
   DYNAMODB_TABLE: 'fode-devops-terraform-locks'
 
