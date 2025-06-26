@@ -294,7 +294,7 @@ jobs:
         name: terraform-plan
         path: ./terraform/tfplan
         retention-days: 30
-        
+
   # =============================================================================
   # JOB 4: TERRAFORM APPLY
   # =============================================================================
@@ -348,9 +348,22 @@ jobs:
     - name: 🚀 Terraform Apply
       working-directory: ./terraform
       run: |
+        # Déterminer l'environnement (même logique que terraform-plan)
+        if [ "${{ github.event.inputs.action }}" != "" ]; then
+          ENVIRONMENT="prod"
+        elif [ "${{ github.ref_name }}" = "main" ]; then
+          ENVIRONMENT="prod"
+        elif [ "${{ github.ref_name }}" = "staging" ]; then
+          ENVIRONMENT="staging"
+        else
+          ENVIRONMENT="dev"
+        fi
+        
+        echo "🚀 Déploiement pour l'environnement: $ENVIRONMENT"
+        
         terraform apply -auto-approve \
           -var="project_name=fode-devops" \
-          -var="environment=production" \
+          -var="environment=$ENVIRONMENT" \
           -var="aws_region=${{ env.AWS_DEFAULT_REGION }}" \
           -var="instance_type=t2.micro"
           
@@ -374,7 +387,19 @@ jobs:
         fi
         
     - name: 📊 Create Deployment Summary
+      working-directory: ./terraform
       run: |
+        # Déterminer l'environnement pour l'affichage
+        if [ "${{ github.event.inputs.action }}" != "" ]; then
+          ENVIRONMENT="prod"
+        elif [ "${{ github.ref_name }}" = "main" ]; then
+          ENVIRONMENT="prod"
+        elif [ "${{ github.ref_name }}" = "staging" ]; then
+          ENVIRONMENT="staging"
+        else
+          ENVIRONMENT="dev"
+        fi
+        
         echo "## 🚀 Déploiement Fode-DevOps Réussi!" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
         echo "### 📋 Informations du déploiement:" >> $GITHUB_STEP_SUMMARY
@@ -384,7 +409,7 @@ jobs:
           echo "- **URL:** http://${{ steps.terraform-outputs.outputs.load_balancer_dns }}" >> $GITHUB_STEP_SUMMARY
         fi
         echo "- **Région:** ${{ env.AWS_DEFAULT_REGION }}" >> $GITHUB_STEP_SUMMARY
-        echo "- **Environnement:** production" >> $GITHUB_STEP_SUMMARY
+        echo "- **Environnement:** $ENVIRONMENT" >> $GITHUB_STEP_SUMMARY
 
   # =============================================================================
   # JOB 5: TESTS POST-DÉPLOIEMENT
