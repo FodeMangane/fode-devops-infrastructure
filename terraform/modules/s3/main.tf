@@ -1,5 +1,5 @@
 # =============================================================================
-# MODULES/S3/MAIN.TF - Module S3 Fode-DevOps
+# MODULES/S3/MAIN.TF - Module S3 Fode-DevOps (FIXED)
 # =============================================================================
 
 # Suffix aléatoire pour l'unicité du bucket
@@ -26,6 +26,9 @@ resource "aws_s3_bucket_versioning" "main" {
   versioning_configuration {
     status = "Suspended"
   }
+  
+  # Ajout explicite de la dépendance et région
+  depends_on = [aws_s3_bucket.main]
 }
 
 # Chiffrement AES256 (gratuit)
@@ -37,6 +40,9 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "main" {
       sse_algorithm = "AES256"
     }
   }
+  
+  # Ajout explicite de la dépendance
+  depends_on = [aws_s3_bucket.main]
 }
 
 # Blocage des accès publics (sécurité)
@@ -47,6 +53,9 @@ resource "aws_s3_bucket_public_access_block" "main" {
   block_public_policy     = true
   ignore_public_acls      = true
   restrict_public_buckets = true
+  
+  # Ajout explicite de la dépendance
+  depends_on = [aws_s3_bucket.main]
 }
 
 # Fichier README Fode-DevOps
@@ -59,6 +68,12 @@ resource "aws_s3_object" "readme" {
     environment  = var.environment
     bucket_name  = aws_s3_bucket.main.id
   })
+  
+  # Attendre que le bucket soit complètement configuré
+  depends_on = [
+    aws_s3_bucket.main,
+    aws_s3_bucket_public_access_block.main
+  ]
 }
 
 # Configuration Fode-DevOps
@@ -83,4 +98,10 @@ resource "aws_s3_object" "config" {
       website = "https://fode-devops.com"
     }
   })
+  
+  # Attendre que le bucket soit complètement configuré
+  depends_on = [
+    aws_s3_bucket.main,
+    aws_s3_bucket_public_access_block.main
+  ]
 }
