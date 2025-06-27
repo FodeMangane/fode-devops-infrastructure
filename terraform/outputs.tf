@@ -39,6 +39,11 @@ output "website_url" {
   value       = "http://${module.ec2.alb_dns_name}"
 }
 
+output "instance_public_ip" {
+  description = "Adresse IP publique de l'instance EC2"
+  value       = module.ec2.instance_public_ip
+}
+
 # Outputs S3
 output "s3_bucket_name" {
   description = "Nom du bucket S3"

@@ -41,3 +41,14 @@ output "nat_gateway_ip" {
   description = "IP publique de la NAT Gateway"
   value       = aws_eip.nat.public_ip
 }
+
+output "load_balancer_dns" {
+  description = "DNS du Load Balancer"
+  value       = aws_lb.main.dns_name  # ✅ Référence directe à la ressource
+  sensitive   = false
+}
+
+output "instance_public_ip" {
+  description = "Adresse IP publique de l'instance EC2"
+  value       = aws_instance.web.public_ip  # ✅ Référence directe à la ressource
+}

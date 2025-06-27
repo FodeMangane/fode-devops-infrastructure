@@ -507,6 +507,18 @@ jobs:
         fi
         echo "- **Région:** ${{ env.AWS_DEFAULT_REGION }}" >> $GITHUB_STEP_SUMMARY
         echo "- **Environnement:** $ENVIRONMENT" >> $GITHUB_STEP_SUMMARY
+    - name: 🔄 Générer inventaire Ansible dynamique
+      working-directory: ./ansible/scripts
+      run: |
+        python3 generate_inventory.py
+        echo "✅ Inventaire Ansible généré avec les outputs Terraf
+    - name: 🚀 Exécuter playbook Ansible
+      working-directory: ./ansible
+      run: |
+        # Attendre que l'instance soit prête
+        sleep 60
+        # Exécuter le playbook principal
+        ansible-playbook -i inventory/dynamic_hosts.json playbooks/site.yml -v
 
   # =============================================================================
   # JOB 6: TESTS POST-DÉPLOIEMENT
