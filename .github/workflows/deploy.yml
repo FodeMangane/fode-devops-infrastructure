@@ -507,11 +507,28 @@ jobs:
         fi
         echo "- **Région:** ${{ env.AWS_DEFAULT_REGION }}" >> $GITHUB_STEP_SUMMARY
         echo "- **Environnement:** $ENVIRONMENT" >> $GITHUB_STEP_SUMMARY
+
+  # =============================================================================
+  # JOB 5B: ANSIBLE DEPLOYMENT
+  # =============================================================================
+  ansible-deployment:
+    name: 🎭 Ansible Deployment
+    runs-on: ubuntu-latest
+    needs: terraform-apply
+    if: |
+      always() && 
+      needs.terraform-apply.result == 'success'
+    
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+        
     - name: 🔄 Générer inventaire Ansible dynamique
       working-directory: ./ansible/scripts
       run: |
         python3 generate_inventory.py
-        echo "✅ Inventaire Ansible généré avec les outputs Terraf
+        echo "✅ Inventaire Ansible généré avec les outputs Terraform"
+        
     - name: 🚀 Exécuter playbook Ansible
       working-directory: ./ansible
       run: |
@@ -526,10 +543,11 @@ jobs:
   post-deployment-tests:
     name: 🧪 Tests Post-Déploiement
     runs-on: ubuntu-latest
-    needs: terraform-apply
+    needs: [terraform-apply, ansible-deployment]
     if: |
       always() && 
       needs.terraform-apply.result == 'success' &&
+      needs.ansible-deployment.result == 'success' &&
       needs.terraform-apply.outputs.load_balancer_dns != 'non-disponible'
     
     steps:
