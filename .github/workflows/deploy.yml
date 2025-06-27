@@ -1,649 +1,649 @@
-# =============================================================================
-# DEPLOY.YML - GitHub Actions Workflow pour Fode-DevOps Infrastructure (CORRIGÉ)
-# =============================================================================
-
-name: 🚀 Fode-DevOps Infrastructure Deployment
-
-on:
-  push:
-    branches: [ main, develop ]
-    paths:
-      - 'terraform/**'
-      - 'ansible/**'
-      - '.github/workflows/**'
-  pull_request:
-    branches: [ main ]
-    paths:
-      - 'terraform/**'
-      - 'ansible/**'
-  workflow_dispatch:
-    inputs:
-      action:
-        description: 'Action à effectuer'
-        required: true
-        default: 'plan'
-        type: choice
-        options:
-          - plan
-          - apply
-          - destroy
-          - create-backend
-          - fix-backend
-
-env:
-  TF_VERSION: '1.6.0'
-  ANSIBLE_VERSION: '2.15'
-  AWS_DEFAULT_REGION: 'eu-west-1'  # ✅ Région cohérente
-  BACKEND_BUCKET: 'fode-devops-terraform-state'
-  DYNAMODB_TABLE: 'fode-devops-terraform-locks'
-
-jobs:
   # =============================================================================
-  # JOB 0: CORRECTION/NETTOYAGE DU BACKEND (NOUVEAU)
+  # DEPLOY.YML - GitHub Actions Workflow pour Fode-DevOps Infrastructure (CORRIGÉ)
   # =============================================================================
-  fix-backend:
-    name: 🔧 Corriger Backend
-    runs-on: ubuntu-latest
-    if: github.event.inputs.action == 'fix-backend'
-    
-    steps:
-    - name: 📥 Checkout code
-      uses: actions/checkout@v4
+
+  name: 🚀 Fode-DevOps Infrastructure Deployment
+
+  on:
+    push:
+      branches: [ main, develop ]
+      paths:
+        - 'terraform/**'
+        - 'ansible/**'
+        - '.github/workflows/**'
+    pull_request:
+      branches: [ main ]
+      paths:
+        - 'terraform/**'
+        - 'ansible/**'
+    workflow_dispatch:
+      inputs:
+        action:
+          description: 'Action à effectuer'
+          required: true
+          default: 'plan'
+          type: choice
+          options:
+            - plan
+            - apply
+            - destroy
+            - create-backend
+            - fix-backend
+
+  env:
+    TF_VERSION: '1.6.0'
+    ANSIBLE_VERSION: '2.15'
+    AWS_DEFAULT_REGION: 'eu-west-1'  # ✅ Région cohérente
+    BACKEND_BUCKET: 'fode-devops-terraform-state'
+    DYNAMODB_TABLE: 'fode-devops-terraform-locks'
+
+  jobs:
+    # =============================================================================
+    # JOB 0: CORRECTION/NETTOYAGE DU BACKEND (NOUVEAU)
+    # =============================================================================
+    fix-backend:
+      name: 🔧 Corriger Backend
+      runs-on: ubuntu-latest
+      if: github.event.inputs.action == 'fix-backend'
       
-    - name: 🔐 Configure AWS Credentials
-      uses: aws-actions/configure-aws-credentials@v4
-      with:
-        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-region: ${{ env.AWS_DEFAULT_REGION }}
+      steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
         
-    - name: 🧹 Nettoyer les ressources DynamoDB en conflit
-      run: |
-        echo "🔍 Vérification des tables DynamoDB existantes..."
-        
-        # Lister toutes les tables DynamoDB
-        aws dynamodb list-tables --region $AWS_DEFAULT_REGION
-        
-        # Vérifier si la table existe dans eu-west-1
-        if aws dynamodb describe-table --table-name $DYNAMODB_TABLE --region $AWS_DEFAULT_REGION 2>/dev/null; then
-          echo "✅ Table DynamoDB existe déjà dans $AWS_DEFAULT_REGION"
-        else
-          echo "❌ Table DynamoDB n'existe pas dans $AWS_DEFAULT_REGION"
+      - name: 🔐 Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_DEFAULT_REGION }}
           
-          # Vérifier si elle existe dans us-east-1
-          if aws dynamodb describe-table --table-name $DYNAMODB_TABLE --region us-east-1 2>/dev/null; then
-            echo "⚠️ Table trouvée dans us-east-1, suppression recommandée"
-            echo "Pour supprimer manuellement:"
-            echo "aws dynamodb delete-table --table-name $DYNAMODB_TABLE --region us-east-1"
-          fi
-        fi
-        
-    - name: 🔧 Recréer le backend dans la bonne région
-      run: |
-        # Créer le bucket S3 pour l'état Terraform
-        echo "📦 Création du bucket S3: $BACKEND_BUCKET"
-        if ! aws s3 ls s3://$BACKEND_BUCKET 2>/dev/null; then
-          aws s3 mb s3://$BACKEND_BUCKET --region $AWS_DEFAULT_REGION
-          echo "✅ Bucket S3 créé"
-        else
-          echo "✅ Bucket S3 existe déjà"
-        fi
-        
-        # Activer le versioning
-        aws s3api put-bucket-versioning \
-          --bucket $BACKEND_BUCKET \
-          --versioning-configuration Status=Enabled
-        
-        # Activer le chiffrement
-        aws s3api put-bucket-encryption \
-          --bucket $BACKEND_BUCKET \
-          --server-side-encryption-configuration '{
-            "Rules": [
-              {
-                "ApplyServerSideEncryptionByDefault": {
-                  "SSEAlgorithm": "AES256"
-                }
-              }
-            ]
-          }'
-        
-        # Bloquer l'accès public
-        aws s3api put-public-access-block \
-          --bucket $BACKEND_BUCKET \
-          --public-access-block-configuration \
-          BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
-        
-        # Créer la table DynamoDB dans la bonne région
-        echo "🔐 Création de la table DynamoDB: $DYNAMODB_TABLE dans $AWS_DEFAULT_REGION"
-        if ! aws dynamodb describe-table --table-name $DYNAMODB_TABLE --region $AWS_DEFAULT_REGION 2>/dev/null; then
-          aws dynamodb create-table \
-            --table-name $DYNAMODB_TABLE \
-            --attribute-definitions AttributeName=LockID,AttributeType=S \
-            --key-schema AttributeName=LockID,KeyType=HASH \
-            --provisioned-throughput ReadCapacityUnits=5,WriteCapacityUnits=5 \
-            --region $AWS_DEFAULT_REGION \
-            --tags Key=Name,Value="Terraform State Lock" Key=Project,Value="Fode-DevOps"
+      - name: 🧹 Nettoyer les ressources DynamoDB en conflit
+        run: |
+          echo "🔍 Vérification des tables DynamoDB existantes..."
           
-          # Attendre que la table soit active
-          aws dynamodb wait table-exists --table-name $DYNAMODB_TABLE --region $AWS_DEFAULT_REGION
-          echo "✅ Table DynamoDB créée dans $AWS_DEFAULT_REGION"
-        else
-          echo "✅ Table DynamoDB existe déjà dans $AWS_DEFAULT_REGION"
-        fi
-        
-        echo "🎉 Backend corrigé avec succès!"
-
-  # =============================================================================
-  # JOB 1: CRÉATION DU BACKEND S3 (SI NÉCESSAIRE)
-  # =============================================================================
-  create-backend:
-    name: 🏗️ Créer Backend S3
-    runs-on: ubuntu-latest
-    if: github.event_name == 'push' || github.event.inputs.action == 'create-backend'
-    
-    steps:
-    - name: 📥 Checkout code
-      uses: actions/checkout@v4
-      
-    - name: 🔐 Configure AWS Credentials
-      uses: aws-actions/configure-aws-credentials@v4
-      with:
-        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-region: ${{ env.AWS_DEFAULT_REGION }}
-        
-    - name: 🏗️ Create S3 Backend Infrastructure
-      run: |
-        # Créer le bucket S3 pour l'état Terraform
-        echo "📦 Création du bucket S3: $BACKEND_BUCKET"
-        if ! aws s3 ls s3://$BACKEND_BUCKET 2>/dev/null; then
-          aws s3 mb s3://$BACKEND_BUCKET --region $AWS_DEFAULT_REGION
-          echo "✅ Bucket S3 créé"
-        else
-          echo "✅ Bucket S3 existe déjà"
-        fi
-        
-        # Activer le versioning
-        aws s3api put-bucket-versioning \
-          --bucket $BACKEND_BUCKET \
-          --versioning-configuration Status=Enabled
-        
-        # Activer le chiffrement
-        aws s3api put-bucket-encryption \
-          --bucket $BACKEND_BUCKET \
-          --server-side-encryption-configuration '{
-            "Rules": [
-              {
-                "ApplyServerSideEncryptionByDefault": {
-                  "SSEAlgorithm": "AES256"
-                }
-              }
-            ]
-          }'
-        
-        # Bloquer l'accès public
-        aws s3api put-public-access-block \
-          --bucket $BACKEND_BUCKET \
-          --public-access-block-configuration \
-          BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
-        
-        # Créer la table DynamoDB dans la bonne région
-        echo "🔐 Création de la table DynamoDB: $DYNAMODB_TABLE"
-        if ! aws dynamodb describe-table --table-name $DYNAMODB_TABLE --region $AWS_DEFAULT_REGION 2>/dev/null; then
-          aws dynamodb create-table \
-            --table-name $DYNAMODB_TABLE \
-            --attribute-definitions AttributeName=LockID,AttributeType=S \
-            --key-schema AttributeName=LockID,KeyType=HASH \
-            --provisioned-throughput ReadCapacityUnits=5,WriteCapacityUnits=5 \
-            --region $AWS_DEFAULT_REGION \
-            --tags Key=Name,Value="Terraform State Lock" Key=Project,Value="Fode-DevOps"
+          # Lister toutes les tables DynamoDB
+          aws dynamodb list-tables --region $AWS_DEFAULT_REGION
           
-          # Attendre que la table soit active
-          aws dynamodb wait table-exists --table-name $DYNAMODB_TABLE --region $AWS_DEFAULT_REGION
-          echo "✅ Table DynamoDB créée"
-        else
-          echo "✅ Table DynamoDB existe déjà"
-        fi
-        
-        echo "🎉 Backend infrastructure créée avec succès!"
-
-  # =============================================================================
-  # JOB 2: VÉRIFICATION DU BACKEND
-  # =============================================================================
-  check-backend:
-    name: 🔍 Vérifier Backend
-    runs-on: ubuntu-latest
-    if: github.event.inputs.action != 'create-backend' && github.event.inputs.action != 'fix-backend'
-    outputs:
-      backend_exists: ${{ steps.check.outputs.backend_exists }}
-    
-    steps:
-    - name: 🔐 Configure AWS Credentials
-      uses: aws-actions/configure-aws-credentials@v4
-      with:
-        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-region: ${{ env.AWS_DEFAULT_REGION }}
-        
-    - name: 🔍 Check Backend Existence
-      id: check
-      run: |
-        echo "Vérification de l'existence du backend..."
-        
-        # Vérifier le bucket S3
-        if aws s3 ls s3://$BACKEND_BUCKET 2>/dev/null; then
-          echo "✅ Bucket S3 existe"
-          S3_EXISTS=true
-        else
-          echo "❌ Bucket S3 n'existe pas"
-          S3_EXISTS=false
-        fi
-        
-        # Vérifier la table DynamoDB dans la bonne région
-        if aws dynamodb describe-table --table-name $DYNAMODB_TABLE --region $AWS_DEFAULT_REGION 2>/dev/null; then
-          echo "✅ Table DynamoDB existe dans $AWS_DEFAULT_REGION"
-          DYNAMODB_EXISTS=true
-        else
-          echo "❌ Table DynamoDB n'existe pas dans $AWS_DEFAULT_REGION"
-          DYNAMODB_EXISTS=false
-        fi
-        
-        if [ "$S3_EXISTS" = true ] && [ "$DYNAMODB_EXISTS" = true ]; then
-          echo "backend_exists=true" >> $GITHUB_OUTPUT
-          echo "✅ Backend infrastructure existe"
-        else
-          echo "backend_exists=false" >> $GITHUB_OUTPUT
-          echo "❌ Backend infrastructure manquante"
-          echo ""
-          echo "Pour corriger le backend, exécutez:"
-          echo "gh workflow run deploy.yml --field action=fix-backend"
-          exit 1
-        fi
-
-  # =============================================================================
-  # JOB 3: VALIDATION ET SÉCURITÉ
-  # =============================================================================
-  validation:
-    name: 🔍 Validation et Sécurité
-    runs-on: ubuntu-latest
-    needs: check-backend
-    if: needs.check-backend.outputs.backend_exists == 'true'
-    
-    steps:
-    - name: 📥 Checkout code
-      uses: actions/checkout@v4
-      
-    - name: 🔧 Setup Terraform
-      uses: hashicorp/setup-terraform@v3
-      with:
-        terraform_version: ${{ env.TF_VERSION }}
-        
-    - name: 🔑 Setup SSH Key
-      run: |
-        mkdir -p ~/.ssh
-        echo "${{ secrets.SSH_PUBLIC_KEY }}" > ~/.ssh/id_rsa.pub
-        chmod 600 ~/.ssh/id_rsa.pub
-        # Créer le répertoire keys dans terraform
-        mkdir -p ./terraform/keys
-        cp ~/.ssh/id_rsa.pub ./terraform/keys/
-        
-    - name: 🔍 Terraform Format et Auto-correction
-      working-directory: ./terraform
-      run: |
-        # Formater automatiquement tous les fichiers
-        terraform fmt -recursive
-        
-        # Vérifier s'il y a des changements après formatage
-        if ! git diff --quiet; then
-          echo "📝 Fichiers formatés automatiquement"
-          git config --local user.email "action@github.com"
-          git config --local user.name "GitHub Action Auto-Format"
-          git add .
-          git commit -m "🔧 Auto-format Terraform files [skip ci]"
-          git push
-          echo "✅ Changements de formatage committés automatiquement"
-        else
-          echo "✅ Tous les fichiers sont déjà correctement formatés"
-        fi
-      
-    - name: ✅ Terraform Validate
-      working-directory: ./terraform
-      run: |
-        terraform init -backend=false
-        terraform validate
-        
-    - name: 🔒 Security Scan avec Checkov
-      uses: bridgecrewio/checkov-action@master
-      with:
-        directory: ./terraform
-        framework: terraform
-        output_format: cli
-      continue-on-error: true
-
-  # =============================================================================
-  # JOB 4: TERRAFORM PLAN
-  # =============================================================================
-  terraform-plan:
-    name: 📋 Terraform Plan
-    runs-on: ubuntu-latest
-    needs: [check-backend, validation]
-    if: |
-      always() && 
-      (needs.check-backend.result == 'success' || needs.check-backend.result == 'skipped') &&
-      needs.validation.result == 'success' &&
-      github.event.inputs.action != 'create-backend' &&
-      github.event.inputs.action != 'destroy' &&
-      github.event.inputs.action != 'fix-backend'
-    
-    steps:
-    - name: 📥 Checkout code
-      uses: actions/checkout@v4
-      
-    - name: 🔧 Setup Terraform
-      uses: hashicorp/setup-terraform@v3
-      with:
-        terraform_version: ${{ env.TF_VERSION }}
-        
-    - name: 🔑 Setup SSH Key
-      run: |
-        mkdir -p ~/.ssh
-        echo "${{ secrets.SSH_PUBLIC_KEY }}" > ~/.ssh/id_rsa.pub
-        chmod 600 ~/.ssh/id_rsa.pub
-        mkdir -p ./terraform/keys
-        cp ~/.ssh/id_rsa.pub ./terraform/keys/
-        
-    - name: 🔐 Configure AWS Credentials
-      uses: aws-actions/configure-aws-credentials@v4
-      with:
-        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-region: ${{ env.AWS_DEFAULT_REGION }}
-        
-    - name: 📦 Terraform Init
-      working-directory: ./terraform
-      run: terraform init
-      
-    - name: 📋 Terraform Plan
-      working-directory: ./terraform
-      run: |
-        # Déterminer l'environnement basé sur la branche ou l'input
-        if [ "${{ github.event.inputs.action }}" != "" ]; then
-          ENVIRONMENT="prod"
-        elif [ "${{ github.ref_name }}" = "main" ]; then
-          ENVIRONMENT="prod"
-        elif [ "${{ github.ref_name }}" = "staging" ]; then
-          ENVIRONMENT="staging"
-        else
-          ENVIRONMENT="dev"
-        fi
-        
-        echo "🎯 Planification pour l'environnement: $ENVIRONMENT"
-        
-        terraform plan -out=tfplan \
-          -var="project_name=fode-devops" \
-          -var="environment=$ENVIRONMENT" \
-          -var="aws_region=${{ env.AWS_DEFAULT_REGION }}" \
-          -var="instance_type=t2.micro"
-          
-    - name: 💾 Save Terraform Plan
-      uses: actions/upload-artifact@v4
-      with:
-        name: terraform-plan
-        path: ./terraform/tfplan
-        retention-days: 30
-
-  # =============================================================================
-  # JOB 5: TERRAFORM APPLY
-  # =============================================================================
-  terraform-apply:
-    name: 🚀 Terraform Apply
-    runs-on: ubuntu-latest
-    needs: [check-backend, validation, terraform-plan]
-    if: |
-      always() && 
-      (needs.check-backend.result == 'success' || needs.check-backend.result == 'skipped') &&
-      needs.validation.result == 'success' &&
-      needs.terraform-plan.result == 'success' &&
-      (
-        (github.ref == 'refs/heads/main' && github.event_name == 'push') ||
-        github.event.inputs.action == 'apply'
-      )
-    environment: production
-    outputs:
-      load_balancer_dns: ${{ steps.terraform-outputs.outputs.load_balancer_dns }}
-      instance_id: ${{ steps.terraform-outputs.outputs.instance_id }}
-    
-    steps:
-    - name: 📥 Checkout code
-      uses: actions/checkout@v4
-      
-    - name: 🔧 Setup Terraform
-      uses: hashicorp/setup-terraform@v3
-      with:
-        terraform_version: ${{ env.TF_VERSION }}
-        terraform_wrapper: false
-        
-    - name: 🔑 Setup SSH Key
-      run: |
-        mkdir -p ~/.ssh
-        echo "${{ secrets.SSH_PUBLIC_KEY }}" > ~/.ssh/id_rsa.pub
-        chmod 600 ~/.ssh/id_rsa.pub
-        mkdir -p ./terraform/keys
-        cp ~/.ssh/id_rsa.pub ./terraform/keys/
-        
-    - name: 🔐 Configure AWS Credentials
-      uses: aws-actions/configure-aws-credentials@v4
-      with:
-        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-region: ${{ env.AWS_DEFAULT_REGION }}
-        
-    - name: 📦 Terraform Init
-      working-directory: ./terraform
-      run: terraform init
-      
-    - name: 🚀 Terraform Apply
-      working-directory: ./terraform
-      run: |
-        # Déterminer l'environnement (même logique que terraform-plan)
-        if [ "${{ github.event.inputs.action }}" != "" ]; then
-          ENVIRONMENT="prod"
-        elif [ "${{ github.ref_name }}" = "main" ]; then
-          ENVIRONMENT="prod"
-        elif [ "${{ github.ref_name }}" = "staging" ]; then
-          ENVIRONMENT="staging"
-        else
-          ENVIRONMENT="dev"
-        fi
-        
-        echo "🚀 Déploiement pour l'environnement: $ENVIRONMENT"
-        
-        terraform apply -auto-approve \
-          -var="project_name=fode-devops" \
-          -var="environment=$ENVIRONMENT" \
-          -var="aws_region=${{ env.AWS_DEFAULT_REGION }}" \
-          -var="instance_type=t2.micro"
-          
-    - name: 📤 Export Terraform Outputs
-      id: terraform-outputs
-      working-directory: ./terraform
-      run: |
-        # Vérifier si les outputs existent avant de les extraire
-        if terraform output load_balancer_dns >/dev/null 2>&1; then
-          LB_DNS=$(terraform output -raw load_balancer_dns)
-          echo "load_balancer_dns=$LB_DNS" >> $GITHUB_OUTPUT
-        else
-          echo "load_balancer_dns=non-disponible" >> $GITHUB_OUTPUT
-        fi
-        
-        if terraform output instance_id >/dev/null 2>&1; then
-          INSTANCE_ID=$(terraform output -raw instance_id)
-          echo "instance_id=$INSTANCE_ID" >> $GITHUB_OUTPUT
-        else
-          echo "instance_id=non-disponible" >> $GITHUB_OUTPUT
-        fi
-        
-    - name: 📊 Create Deployment Summary
-      working-directory: ./terraform
-      run: |
-        # Déterminer l'environnement pour l'affichage
-        if [ "${{ github.event.inputs.action }}" != "" ]; then
-          ENVIRONMENT="prod"
-        elif [ "${{ github.ref_name }}" = "main" ]; then
-          ENVIRONMENT="prod"
-        elif [ "${{ github.ref_name }}" = "staging" ]; then
-          ENVIRONMENT="staging"
-        else
-          ENVIRONMENT="dev"
-        fi
-        
-        echo "## 🚀 Déploiement Fode-DevOps Réussi!" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        echo "### 📋 Informations du déploiement:" >> $GITHUB_STEP_SUMMARY
-        echo "- **Instance ID:** ${{ steps.terraform-outputs.outputs.instance_id }}" >> $GITHUB_STEP_SUMMARY
-        echo "- **Load Balancer DNS:** ${{ steps.terraform-outputs.outputs.load_balancer_dns }}" >> $GITHUB_STEP_SUMMARY
-        if [ "${{ steps.terraform-outputs.outputs.load_balancer_dns }}" != "non-disponible" ]; then
-          echo "- **URL:** http://${{ steps.terraform-outputs.outputs.load_balancer_dns }}" >> $GITHUB_STEP_SUMMARY
-        fi
-        echo "- **Région:** ${{ env.AWS_DEFAULT_REGION }}" >> $GITHUB_STEP_SUMMARY
-        echo "- **Environnement:** $ENVIRONMENT" >> $GITHUB_STEP_SUMMARY
-
-  # =============================================================================
-  # JOB 5B: ANSIBLE DEPLOYMENT
-  # =============================================================================
-  ansible-deployment:
-    name: 🎭 Ansible Deployment
-    runs-on: ubuntu-latest
-    needs: terraform-apply
-    if: |
-      always() && 
-      needs.terraform-apply.result == 'success'
-    
-    steps:
-    - name: 📥 Checkout code
-      uses: actions/checkout@v4
-        
-    - name: 🔄 Générer inventaire Ansible dynamique
-      working-directory: ./
-      run: |
-        python3 ansible/script/generate_inventory.py
-        echo "✅ Inventaire Ansible généré avec les outputs Terraform"
-
-        
-    - name: 🚀 Exécuter playbook Ansible
-      working-directory: ./ansible
-      run: |
-        # Attendre que l'instance soit prête
-        sleep 60
-        # Exécuter le playbook principal
-        ansible-playbook -i inventory/dynamic_hosts.json playbooks/site.yml -v
-
-  # =============================================================================
-  # JOB 6: TESTS POST-DÉPLOIEMENT
-  # =============================================================================
-  post-deployment-tests:
-    name: 🧪 Tests Post-Déploiement
-    runs-on: ubuntu-latest
-    needs: [terraform-apply, ansible-deployment]
-    if: |
-      always() && 
-      needs.terraform-apply.result == 'success' &&
-      needs.ansible-deployment.result == 'success' &&
-      needs.terraform-apply.outputs.load_balancer_dns != 'non-disponible'
-    
-    steps:
-    - name: 📥 Checkout code
-      uses: actions/checkout@v4
-        
-    - name: 🧪 Test Load Balancer
-      run: |
-        # Récupérer le DNS du Load Balancer
-        LB_DNS="${{ needs.terraform-apply.outputs.load_balancer_dns }}"
-        
-        if [ "$LB_DNS" = "non-disponible" ] || [ -z "$LB_DNS" ]; then
-          echo "⚠️ Load Balancer DNS non disponible, skip des tests"
-          exit 0
-        fi
-        
-        # Attendre que le Load Balancer soit prêt
-        echo "⏳ Attente du démarrage du Load Balancer..."
-        sleep 120
-        
-        # Test de connectivité HTTP
-        echo "🌐 Test de connectivité HTTP via Load Balancer..."
-        for i in {1..15}; do
-          if curl -f -s http://$LB_DNS; then
-            echo "✅ Load Balancer accessible!"
-            break
+          # Vérifier si la table existe dans eu-west-1
+          if aws dynamodb describe-table --table-name $DYNAMODB_TABLE --region $AWS_DEFAULT_REGION 2>/dev/null; then
+            echo "✅ Table DynamoDB existe déjà dans $AWS_DEFAULT_REGION"
           else
-            echo "⏳ Tentative $i/15..."
-            sleep 20
+            echo "❌ Table DynamoDB n'existe pas dans $AWS_DEFAULT_REGION"
+            
+            # Vérifier si elle existe dans us-east-1
+            if aws dynamodb describe-table --table-name $DYNAMODB_TABLE --region us-east-1 2>/dev/null; then
+              echo "⚠️ Table trouvée dans us-east-1, suppression recommandée"
+              echo "Pour supprimer manuellement:"
+              echo "aws dynamodb delete-table --table-name $DYNAMODB_TABLE --region us-east-1"
+            fi
           fi
-        done
-        
-        # Test de contenu
-        echo "📄 Test du contenu..."
-        CONTENT=$(curl -s http://$LB_DNS || echo "")
-        if echo "$CONTENT" | grep -q "Fode-DevOps\|Welcome\|nginx\|Apache"; then
-          echo "✅ Contenu correct détecté!"
-        else
-          echo "⚠️ Contenu inattendu, mais service accessible"
-        fi
-
-  # =============================================================================
-  # JOB 7: TERRAFORM DESTROY
-  # =============================================================================
-  terraform-destroy:
-    name: 💥 Terraform Destroy
-    runs-on: ubuntu-latest
-    needs: check-backend
-    if: |
-      always() && 
-      (needs.check-backend.result == 'success' || needs.check-backend.result == 'skipped') &&
-      github.event.inputs.action == 'destroy'
-    environment: destruction
-    
-    steps:
-    - name: 📥 Checkout code
-      uses: actions/checkout@v4
-      
-    - name: 🔧 Setup Terraform
-      uses: hashicorp/setup-terraform@v3
-      with:
-        terraform_version: ${{ env.TF_VERSION }}
-        
-    - name: 🔑 Setup SSH Key
-      run: |
-        mkdir -p ~/.ssh
-        echo "${{ secrets.SSH_PUBLIC_KEY }}" > ~/.ssh/id_rsa.pub
-        chmod 600 ~/.ssh/id_rsa.pub
-        mkdir -p ./terraform/keys
-        cp ~/.ssh/id_rsa.pub ./terraform/keys/
-        
-    - name: 🔐 Configure AWS Credentials
-      uses: aws-actions/configure-aws-credentials@v4
-      with:
-        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-region: ${{ env.AWS_DEFAULT_REGION }}
-        
-    - name: 📦 Terraform Init
-      working-directory: ./terraform
-      run: terraform init
-      
-    - name: 💥 Terraform Destroy
-      working-directory: ./terraform
-      run: |
-        terraform destroy -auto-approve \
-          -var="project_name=fode-devops" \
-          -var="environment=prod" \
-          -var="aws_region=${{ env.AWS_DEFAULT_REGION }}" \
-          -var="instance_type=t2.micro"
           
-    - name: 📊 Destruction Summary
-      run: |
-        echo "## 💥 Infrastructure Fode-DevOps Détruite!" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        echo "### ⚠️ Toutes les ressources ont été supprimées" >> $GITHUB_STEP_SUMMARY
-        echo "- **Région:** ${{ env.AWS_DEFAULT_REGION }}" >> $GITHUB_STEP_SUMMARY
-        echo "- **Projet:** fode-devops" >> $GITHUB_STEP_SUMMARY
+      - name: 🔧 Recréer le backend dans la bonne région
+        run: |
+          # Créer le bucket S3 pour l'état Terraform
+          echo "📦 Création du bucket S3: $BACKEND_BUCKET"
+          if ! aws s3 ls s3://$BACKEND_BUCKET 2>/dev/null; then
+            aws s3 mb s3://$BACKEND_BUCKET --region $AWS_DEFAULT_REGION
+            echo "✅ Bucket S3 créé"
+          else
+            echo "✅ Bucket S3 existe déjà"
+          fi
+          
+          # Activer le versioning
+          aws s3api put-bucket-versioning \
+            --bucket $BACKEND_BUCKET \
+            --versioning-configuration Status=Enabled
+          
+          # Activer le chiffrement
+          aws s3api put-bucket-encryption \
+            --bucket $BACKEND_BUCKET \
+            --server-side-encryption-configuration '{
+              "Rules": [
+                {
+                  "ApplyServerSideEncryptionByDefault": {
+                    "SSEAlgorithm": "AES256"
+                  }
+                }
+              ]
+            }'
+          
+          # Bloquer l'accès public
+          aws s3api put-public-access-block \
+            --bucket $BACKEND_BUCKET \
+            --public-access-block-configuration \
+            BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
+          
+          # Créer la table DynamoDB dans la bonne région
+          echo "🔐 Création de la table DynamoDB: $DYNAMODB_TABLE dans $AWS_DEFAULT_REGION"
+          if ! aws dynamodb describe-table --table-name $DYNAMODB_TABLE --region $AWS_DEFAULT_REGION 2>/dev/null; then
+            aws dynamodb create-table \
+              --table-name $DYNAMODB_TABLE \
+              --attribute-definitions AttributeName=LockID,AttributeType=S \
+              --key-schema AttributeName=LockID,KeyType=HASH \
+              --provisioned-throughput ReadCapacityUnits=5,WriteCapacityUnits=5 \
+              --region $AWS_DEFAULT_REGION \
+              --tags Key=Name,Value="Terraform State Lock" Key=Project,Value="Fode-DevOps"
+            
+            # Attendre que la table soit active
+            aws dynamodb wait table-exists --table-name $DYNAMODB_TABLE --region $AWS_DEFAULT_REGION
+            echo "✅ Table DynamoDB créée dans $AWS_DEFAULT_REGION"
+          else
+            echo "✅ Table DynamoDB existe déjà dans $AWS_DEFAULT_REGION"
+          fi
+          
+          echo "🎉 Backend corrigé avec succès!"
+
+    # =============================================================================
+    # JOB 1: CRÉATION DU BACKEND S3 (SI NÉCESSAIRE)
+    # =============================================================================
+    create-backend:
+      name: 🏗️ Créer Backend S3
+      runs-on: ubuntu-latest
+      if: github.event_name == 'push' || github.event.inputs.action == 'create-backend'
+      
+      steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+        
+      - name: 🔐 Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_DEFAULT_REGION }}
+          
+      - name: 🏗️ Create S3 Backend Infrastructure
+        run: |
+          # Créer le bucket S3 pour l'état Terraform
+          echo "📦 Création du bucket S3: $BACKEND_BUCKET"
+          if ! aws s3 ls s3://$BACKEND_BUCKET 2>/dev/null; then
+            aws s3 mb s3://$BACKEND_BUCKET --region $AWS_DEFAULT_REGION
+            echo "✅ Bucket S3 créé"
+          else
+            echo "✅ Bucket S3 existe déjà"
+          fi
+          
+          # Activer le versioning
+          aws s3api put-bucket-versioning \
+            --bucket $BACKEND_BUCKET \
+            --versioning-configuration Status=Enabled
+          
+          # Activer le chiffrement
+          aws s3api put-bucket-encryption \
+            --bucket $BACKEND_BUCKET \
+            --server-side-encryption-configuration '{
+              "Rules": [
+                {
+                  "ApplyServerSideEncryptionByDefault": {
+                    "SSEAlgorithm": "AES256"
+                  }
+                }
+              ]
+            }'
+          
+          # Bloquer l'accès public
+          aws s3api put-public-access-block \
+            --bucket $BACKEND_BUCKET \
+            --public-access-block-configuration \
+            BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
+          
+          # Créer la table DynamoDB dans la bonne région
+          echo "🔐 Création de la table DynamoDB: $DYNAMODB_TABLE"
+          if ! aws dynamodb describe-table --table-name $DYNAMODB_TABLE --region $AWS_DEFAULT_REGION 2>/dev/null; then
+            aws dynamodb create-table \
+              --table-name $DYNAMODB_TABLE \
+              --attribute-definitions AttributeName=LockID,AttributeType=S \
+              --key-schema AttributeName=LockID,KeyType=HASH \
+              --provisioned-throughput ReadCapacityUnits=5,WriteCapacityUnits=5 \
+              --region $AWS_DEFAULT_REGION \
+              --tags Key=Name,Value="Terraform State Lock" Key=Project,Value="Fode-DevOps"
+            
+            # Attendre que la table soit active
+            aws dynamodb wait table-exists --table-name $DYNAMODB_TABLE --region $AWS_DEFAULT_REGION
+            echo "✅ Table DynamoDB créée"
+          else
+            echo "✅ Table DynamoDB existe déjà"
+          fi
+          
+          echo "🎉 Backend infrastructure créée avec succès!"
+
+    # =============================================================================
+    # JOB 2: VÉRIFICATION DU BACKEND
+    # =============================================================================
+    check-backend:
+      name: 🔍 Vérifier Backend
+      runs-on: ubuntu-latest
+      if: github.event.inputs.action != 'create-backend' && github.event.inputs.action != 'fix-backend'
+      outputs:
+        backend_exists: ${{ steps.check.outputs.backend_exists }}
+      
+      steps:
+      - name: 🔐 Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_DEFAULT_REGION }}
+          
+      - name: 🔍 Check Backend Existence
+        id: check
+        run: |
+          echo "Vérification de l'existence du backend..."
+          
+          # Vérifier le bucket S3
+          if aws s3 ls s3://$BACKEND_BUCKET 2>/dev/null; then
+            echo "✅ Bucket S3 existe"
+            S3_EXISTS=true
+          else
+            echo "❌ Bucket S3 n'existe pas"
+            S3_EXISTS=false
+          fi
+          
+          # Vérifier la table DynamoDB dans la bonne région
+          if aws dynamodb describe-table --table-name $DYNAMODB_TABLE --region $AWS_DEFAULT_REGION 2>/dev/null; then
+            echo "✅ Table DynamoDB existe dans $AWS_DEFAULT_REGION"
+            DYNAMODB_EXISTS=true
+          else
+            echo "❌ Table DynamoDB n'existe pas dans $AWS_DEFAULT_REGION"
+            DYNAMODB_EXISTS=false
+          fi
+          
+          if [ "$S3_EXISTS" = true ] && [ "$DYNAMODB_EXISTS" = true ]; then
+            echo "backend_exists=true" >> $GITHUB_OUTPUT
+            echo "✅ Backend infrastructure existe"
+          else
+            echo "backend_exists=false" >> $GITHUB_OUTPUT
+            echo "❌ Backend infrastructure manquante"
+            echo ""
+            echo "Pour corriger le backend, exécutez:"
+            echo "gh workflow run deploy.yml --field action=fix-backend"
+            exit 1
+          fi
+
+    # =============================================================================
+    # JOB 3: VALIDATION ET SÉCURITÉ
+    # =============================================================================
+    validation:
+      name: 🔍 Validation et Sécurité
+      runs-on: ubuntu-latest
+      needs: check-backend
+      if: needs.check-backend.outputs.backend_exists == 'true'
+      
+      steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+        
+      - name: 🔧 Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          
+      - name: 🔑 Setup SSH Key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PUBLIC_KEY }}" > ~/.ssh/id_rsa.pub
+          chmod 600 ~/.ssh/id_rsa.pub
+          # Créer le répertoire keys dans terraform
+          mkdir -p ./terraform/keys
+          cp ~/.ssh/id_rsa.pub ./terraform/keys/
+          
+      - name: 🔍 Terraform Format et Auto-correction
+        working-directory: ./terraform
+        run: |
+          # Formater automatiquement tous les fichiers
+          terraform fmt -recursive
+          
+          # Vérifier s'il y a des changements après formatage
+          if ! git diff --quiet; then
+            echo "📝 Fichiers formatés automatiquement"
+            git config --local user.email "action@github.com"
+            git config --local user.name "GitHub Action Auto-Format"
+            git add .
+            git commit -m "🔧 Auto-format Terraform files [skip ci]"
+            git push
+            echo "✅ Changements de formatage committés automatiquement"
+          else
+            echo "✅ Tous les fichiers sont déjà correctement formatés"
+          fi
+        
+      - name: ✅ Terraform Validate
+        working-directory: ./terraform
+        run: |
+          terraform init -backend=false
+          terraform validate
+          
+      - name: 🔒 Security Scan avec Checkov
+        uses: bridgecrewio/checkov-action@master
+        with:
+          directory: ./terraform
+          framework: terraform
+          output_format: cli
+        continue-on-error: true
+
+    # =============================================================================
+    # JOB 4: TERRAFORM PLAN
+    # =============================================================================
+    terraform-plan:
+      name: 📋 Terraform Plan
+      runs-on: ubuntu-latest
+      needs: [check-backend, validation]
+      if: |
+        always() && 
+        (needs.check-backend.result == 'success' || needs.check-backend.result == 'skipped') &&
+        needs.validation.result == 'success' &&
+        github.event.inputs.action != 'create-backend' &&
+        github.event.inputs.action != 'destroy' &&
+        github.event.inputs.action != 'fix-backend'
+      
+      steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+        
+      - name: 🔧 Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          
+      - name: 🔑 Setup SSH Key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PUBLIC_KEY }}" > ~/.ssh/id_rsa.pub
+          chmod 600 ~/.ssh/id_rsa.pub
+          mkdir -p ./terraform/keys
+          cp ~/.ssh/id_rsa.pub ./terraform/keys/
+          
+      - name: 🔐 Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_DEFAULT_REGION }}
+          
+      - name: 📦 Terraform Init
+        working-directory: ./terraform
+        run: terraform init
+        
+      - name: 📋 Terraform Plan
+        working-directory: ./terraform
+        run: |
+          # Déterminer l'environnement basé sur la branche ou l'input
+          if [ "${{ github.event.inputs.action }}" != "" ]; then
+            ENVIRONMENT="prod"
+          elif [ "${{ github.ref_name }}" = "main" ]; then
+            ENVIRONMENT="prod"
+          elif [ "${{ github.ref_name }}" = "staging" ]; then
+            ENVIRONMENT="staging"
+          else
+            ENVIRONMENT="dev"
+          fi
+          
+          echo "🎯 Planification pour l'environnement: $ENVIRONMENT"
+          
+          terraform plan -out=tfplan \
+            -var="project_name=fode-devops" \
+            -var="environment=$ENVIRONMENT" \
+            -var="aws_region=${{ env.AWS_DEFAULT_REGION }}" \
+            -var="instance_type=t2.micro"
+            
+      - name: 💾 Save Terraform Plan
+        uses: actions/upload-artifact@v4
+        with:
+          name: terraform-plan
+          path: ./terraform/tfplan
+          retention-days: 30
+
+    # =============================================================================
+    # JOB 5: TERRAFORM APPLY
+    # =============================================================================
+    terraform-apply:
+      name: 🚀 Terraform Apply
+      runs-on: ubuntu-latest
+      needs: [check-backend, validation, terraform-plan]
+      if: |
+        always() && 
+        (needs.check-backend.result == 'success' || needs.check-backend.result == 'skipped') &&
+        needs.validation.result == 'success' &&
+        needs.terraform-plan.result == 'success' &&
+        (
+          (github.ref == 'refs/heads/main' && github.event_name == 'push') ||
+          github.event.inputs.action == 'apply'
+        )
+      environment: production
+      outputs:
+        load_balancer_dns: ${{ steps.terraform-outputs.outputs.load_balancer_dns }}
+        instance_id: ${{ steps.terraform-outputs.outputs.instance_id }}
+      
+      steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+        
+      - name: 🔧 Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+          
+      - name: 🔑 Setup SSH Key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PUBLIC_KEY }}" > ~/.ssh/id_rsa.pub
+          chmod 600 ~/.ssh/id_rsa.pub
+          mkdir -p ./terraform/keys
+          cp ~/.ssh/id_rsa.pub ./terraform/keys/
+          
+      - name: 🔐 Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_DEFAULT_REGION }}
+          
+      - name: 📦 Terraform Init
+        working-directory: ./terraform
+        run: terraform init
+        
+      - name: 🚀 Terraform Apply
+        working-directory: ./terraform
+        run: |
+          # Déterminer l'environnement (même logique que terraform-plan)
+          if [ "${{ github.event.inputs.action }}" != "" ]; then
+            ENVIRONMENT="prod"
+          elif [ "${{ github.ref_name }}" = "main" ]; then
+            ENVIRONMENT="prod"
+          elif [ "${{ github.ref_name }}" = "staging" ]; then
+            ENVIRONMENT="staging"
+          else
+            ENVIRONMENT="dev"
+          fi
+          
+          echo "🚀 Déploiement pour l'environnement: $ENVIRONMENT"
+          
+          terraform apply -auto-approve \
+            -var="project_name=fode-devops" \
+            -var="environment=$ENVIRONMENT" \
+            -var="aws_region=${{ env.AWS_DEFAULT_REGION }}" \
+            -var="instance_type=t2.micro"
+            
+      - name: 📤 Export Terraform Outputs
+        id: terraform-outputs
+        working-directory: ./terraform
+        run: |
+          # Vérifier si les outputs existent avant de les extraire
+          if terraform output load_balancer_dns >/dev/null 2>&1; then
+            LB_DNS=$(terraform output -raw load_balancer_dns)
+            echo "load_balancer_dns=$LB_DNS" >> $GITHUB_OUTPUT
+          else
+            echo "load_balancer_dns=non-disponible" >> $GITHUB_OUTPUT
+          fi
+          
+          if terraform output instance_id >/dev/null 2>&1; then
+            INSTANCE_ID=$(terraform output -raw instance_id)
+            echo "instance_id=$INSTANCE_ID" >> $GITHUB_OUTPUT
+          else
+            echo "instance_id=non-disponible" >> $GITHUB_OUTPUT
+          fi
+          
+      - name: 📊 Create Deployment Summary
+        working-directory: ./terraform
+        run: |
+          # Déterminer l'environnement pour l'affichage
+          if [ "${{ github.event.inputs.action }}" != "" ]; then
+            ENVIRONMENT="prod"
+          elif [ "${{ github.ref_name }}" = "main" ]; then
+            ENVIRONMENT="prod"
+          elif [ "${{ github.ref_name }}" = "staging" ]; then
+            ENVIRONMENT="staging"
+          else
+            ENVIRONMENT="dev"
+          fi
+          
+          echo "## 🚀 Déploiement Fode-DevOps Réussi!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 📋 Informations du déploiement:" >> $GITHUB_STEP_SUMMARY
+          echo "- **Instance ID:** ${{ steps.terraform-outputs.outputs.instance_id }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Load Balancer DNS:** ${{ steps.terraform-outputs.outputs.load_balancer_dns }}" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ steps.terraform-outputs.outputs.load_balancer_dns }}" != "non-disponible" ]; then
+            echo "- **URL:** http://${{ steps.terraform-outputs.outputs.load_balancer_dns }}" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "- **Région:** ${{ env.AWS_DEFAULT_REGION }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Environnement:** $ENVIRONMENT" >> $GITHUB_STEP_SUMMARY
+
+    # =============================================================================
+    # JOB 5B: ANSIBLE DEPLOYMENT
+    # =============================================================================
+    ansible-deployment:
+      name: 🎭 Ansible Deployment
+      runs-on: ubuntu-latest
+      needs: terraform-apply
+      if: |
+        always() && 
+        needs.terraform-apply.result == 'success'
+      
+      steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+          
+      - name: 🔄 Générer inventaire Ansible dynamique
+        working-directory: ./
+        run: |
+          python3 ansible/script/generate_inventory.py
+          echo "✅ Inventaire Ansible généré avec les outputs Terraform"
+
+          
+      - name: 🚀 Exécuter playbook Ansible
+        working-directory: ./ansible
+        run: |
+          # Attendre que l'instance soit prête
+          sleep 60
+          # Exécuter le playbook principal
+          ansible-playbook -i inventory/dynamic_hosts.json playbooks/site.yml -v
+
+    # =============================================================================
+    # JOB 6: TESTS POST-DÉPLOIEMENT
+    # =============================================================================
+    post-deployment-tests:
+      name: 🧪 Tests Post-Déploiement
+      runs-on: ubuntu-latest
+      needs: [terraform-apply, ansible-deployment]
+      if: |
+        always() && 
+        needs.terraform-apply.result == 'success' &&
+        needs.ansible-deployment.result == 'success' &&
+        needs.terraform-apply.outputs.load_balancer_dns != 'non-disponible'
+      
+      steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+          
+      - name: 🧪 Test Load Balancer
+        run: |
+          # Récupérer le DNS du Load Balancer
+          LB_DNS="${{ needs.terraform-apply.outputs.load_balancer_dns }}"
+          
+          if [ "$LB_DNS" = "non-disponible" ] || [ -z "$LB_DNS" ]; then
+            echo "⚠️ Load Balancer DNS non disponible, skip des tests"
+            exit 0
+          fi
+          
+          # Attendre que le Load Balancer soit prêt
+          echo "⏳ Attente du démarrage du Load Balancer..."
+          sleep 120
+          
+          # Test de connectivité HTTP
+          echo "🌐 Test de connectivité HTTP via Load Balancer..."
+          for i in {1..15}; do
+            if curl -f -s http://$LB_DNS; then
+              echo "✅ Load Balancer accessible!"
+              break
+            else
+              echo "⏳ Tentative $i/15..."
+              sleep 20
+            fi
+          done
+          
+          # Test de contenu
+          echo "📄 Test du contenu..."
+          CONTENT=$(curl -s http://$LB_DNS || echo "")
+          if echo "$CONTENT" | grep -q "Fode-DevOps\|Welcome\|nginx\|Apache"; then
+            echo "✅ Contenu correct détecté!"
+          else
+            echo "⚠️ Contenu inattendu, mais service accessible"
+          fi
+
+    # =============================================================================
+    # JOB 7: TERRAFORM DESTROY
+    # =============================================================================
+    terraform-destroy:
+      name: 💥 Terraform Destroy
+      runs-on: ubuntu-latest
+      needs: check-backend
+      if: |
+        always() && 
+        (needs.check-backend.result == 'success' || needs.check-backend.result == 'skipped') &&
+        github.event.inputs.action == 'destroy'
+      environment: destruction
+      
+      steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+        
+      - name: 🔧 Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          
+      - name: 🔑 Setup SSH Key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PUBLIC_KEY }}" > ~/.ssh/id_rsa.pub
+          chmod 600 ~/.ssh/id_rsa.pub
+          mkdir -p ./terraform/keys
+          cp ~/.ssh/id_rsa.pub ./terraform/keys/
+          
+      - name: 🔐 Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_DEFAULT_REGION }}
+          
+      - name: 📦 Terraform Init
+        working-directory: ./terraform
+        run: terraform init
+        
+      - name: 💥 Terraform Destroy
+        working-directory: ./terraform
+        run: |
+          terraform destroy -auto-approve \
+            -var="project_name=fode-devops" \
+            -var="environment=prod" \
+            -var="aws_region=${{ env.AWS_DEFAULT_REGION }}" \
+            -var="instance_type=t2.micro"
+            
+      - name: 📊 Destruction Summary
+        run: |
+          echo "## 💥 Infrastructure Fode-DevOps Détruite!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### ⚠️ Toutes les ressources ont été supprimées" >> $GITHUB_STEP_SUMMARY
+          echo "- **Région:** ${{ env.AWS_DEFAULT_REGION }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Projet:** fode-devops" >> $GITHUB_STEP_SUMMARY
