@@ -524,10 +524,11 @@ jobs:
       uses: actions/checkout@v4
         
     - name: 🔄 Générer inventaire Ansible dynamique
-      working-directory: ./ansible/scripts
+      working-directory: ./
       run: |
-        python3 generate_inventory.py
+        python3 ansible/script/generate_inventory.py
         echo "✅ Inventaire Ansible généré avec les outputs Terraform"
+
         
     - name: 🚀 Exécuter playbook Ansible
       working-directory: ./ansible
