@@ -522,148 +522,22 @@ jobs:
     steps:
     - name: 📥 Checkout code
       uses: actions/checkout@v4
-      
-    - name: 🐍 Setup Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.9'
-        
-    - name: 📦 Install Ansible
-      run: |
-        python -m pip install --upgrade pip
-        pip install ansible boto3 botocore
-        ansible --version
-        
-    - name: 🔐 Configure AWS Credentials
-      uses: aws-actions/configure-aws-credentials@v4
-      with:
-        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-region: ${{ env.AWS_DEFAULT_REGION }}
-        
-    - name: 🔧 Setup Terraform
-      uses: hashicorp/setup-terraform@v3
-      with:
-        terraform_version: ${{ env.TF_VERSION }}
-        terraform_wrapper: false
-        
-    - name: 📦 Terraform Init (pour les outputs)
-      working-directory: ./terraform
-      run: terraform init
-      
-    - name: 🔑 Setup SSH Keys
-      run: |
-        mkdir -p ~/.ssh
-        echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
-        echo "${{ secrets.SSH_PUBLIC_KEY }}" > ~/.ssh/id_rsa.pub
-        chmod 600 ~/.ssh/id_rsa
-        chmod 644 ~/.ssh/id_rsa.pub
-        
-        # Créer le répertoire keys dans terraform si nécessaire
-        mkdir -p ./terraform/keys
-        cp ~/.ssh/id_rsa.pub ./terraform/keys/
         
     - name: 🔄 Générer inventaire Ansible dynamique
-      working-directory: ./ansible/scripts
+      working-directory: ./
       run: |
-        python3 generate_inventory.py
+        python3 ansible/script/generate_inventory.py
         echo "✅ Inventaire Ansible généré avec les outputs Terraform"
 
-        
-        # Vérifier que le fichier a été créé
-        if [ -f "ansible/inventory/dynamic_hosts.json" ]; then
-          echo "✅ Fichier d'inventaire créé avec succès"
-          echo "📄 Contenu de l'inventaire:"
-          cat ansible/inventory/dynamic_hosts.json
-        else
-          echo "❌ Échec de la création du fichier d'inventaire"
-          exit 1
-        fi
-        
-    - name: 🧪 Test de connectivité SSH
-      run: |
-        # Extraire l'IP de l'instance depuis l'inventaire
-        INSTANCE_IP=$(python3 -c "
-        import json
-        with open('ansible/inventory/dynamic_hosts.json', 'r') as f:
-        inventory = json.load(f)
-        print(inventory['all']['children']['fode_devops_prod']['hosts']['fode-web-server']['ansible_host'])
-        ")
-        
-        echo "🔍 Test de connectivité SSH vers: $INSTANCE_IP"
-        
-        # Attendre que l'instance soit prête
-        echo "⏳ Attente de la disponibilité de l'instance..."
-        sleep 120
-        
-        # Test de connectivité SSH avec timeout
-        for i in {1..10}; do
-          echo "🔄 Tentative de connexion SSH $i/10..."
-          if ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ~/.ssh/id_rsa ec2-user@$INSTANCE_IP "echo 'SSH OK'" 2>/dev/null; then
-            echo "✅ Connexion SSH réussie!"
-            break
-          else
-            echo "⏳ Connexion SSH échouée, nouvelle tentative dans 30s..."
-            sleep 30
-          fi
-          
-          if [ $i -eq 10 ]; then
-            echo "❌ Impossible de se connecter en SSH après 10 tentatives"
-            exit 1
-          fi
-        done
         
     - name: 🚀 Exécuter playbook Ansible
       working-directory: ./ansible
       run: |
-        echo "📁 Vérification de la structure Ansible:"
-        ls -la
-        
-        # Vérifier que les fichiers existent
-        if [ ! -f "inventory/dynamic_hosts.json" ]; then
-          echo "❌ Fichier d'inventaire manquant"
-          exit 1
-        fi
-        
-        if [ ! -f "playbooks/site.yml" ]; then
-          echo "❌ Playbook principal manquant"
-          echo "📁 Contenu du répertoire playbooks:"
-          ls -la playbooks/ || echo "Répertoire playbooks non trouvé"
-          exit 1
-        fi
-        
-        # Tester l'inventaire
-        echo "🧪 Test de l'inventaire Ansible:"
-        ansible-inventory -i inventory/dynamic_hosts.json --list
-        
-        # Tester la connectivité
-        echo "🔍 Test de connectivité Ansible:"
-        ansible all -i inventory/dynamic_hosts.json -m ping -v
-        
+        # Attendre que l'instance soit prête
+        sleep 60
         # Exécuter le playbook principal
-        echo "🚀 Exécution du playbook Ansible:"
         ansible-playbook -i inventory/dynamic_hosts.json playbooks/site.yml -v
-        
-    - name: 📊 Résumé du déploiement Ansible
-      if: always()
-      run: |
-        echo "## 🎭 Résumé du déploiement Ansible" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        
-        if [ -f "ansible/inventory/dynamic_hosts.json" ]; then
-          INSTANCE_IP=$(python3 -c "
-        import json
-        with open('ansible/inventory/dynamic_hosts.json', 'r') as f:
-        inventory = json.load(f)
-        print(inventory['all']['children']['fode_devops_prod']['hosts']['fode-web-server']['ansible_host'])
-        " 2>/dev/null || echo "non-disponible")
-          
-        echo "- **Instance IP:** $INSTANCE_IP" >> $GITHUB_STEP_SUMMARY
-        echo "- **Statut:** ${{ job.status }}" >> $GITHUB_STEP_SUMMARY
-        echo "- **Inventaire:** ✅ Généré" >> $GITHUB_STEP_SUMMARY
-        else
-        echo "- **Erreur:** Inventaire non généré" >> $GITHUB_STEP_SUMMARY
-        fi
+
   # =============================================================================
   # JOB 6: TESTS POST-DÉPLOIEMENT
   # =============================================================================
