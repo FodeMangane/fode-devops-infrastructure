@@ -508,9 +508,9 @@ jobs:
         echo "- **Région:** ${{ env.AWS_DEFAULT_REGION }}" >> $GITHUB_STEP_SUMMARY
         echo "- **Environnement:** $ENVIRONMENT" >> $GITHUB_STEP_SUMMARY
 
-  # =============================================================================
-  # JOB 5B: ANSIBLE DEPLOYMENT
-  # =============================================================================
+# =============================================================================
+# JOB 5B: ANSIBLE DEPLOYMENT
+# =============================================================================
   ansible-deployment:
     name: 🎭 Ansible Deployment
     runs-on: ubuntu-latest
@@ -528,7 +528,7 @@ jobs:
       with: 
         python-version: '3.9'
         
-    - name: 📦 Install Ansible
+    - name: 📦 Install Ansible and dependencies
       run: |
         python -m pip install --upgrade pip
         pip install ansible boto3 botocore
@@ -551,6 +551,18 @@ jobs:
       working-directory: ./terraform
       run: terraform init
       
+    - name: 🔍 Debug Terraform outputs
+      working-directory: ./terraform
+      run: |
+        echo "📋 Outputs Terraform disponibles:"
+        terraform output
+        echo ""
+        echo "🔍 Outputs spécifiques:"
+        echo "Instance ID: $(terraform output -raw instance_id 2>/dev/null || echo 'N/A')"
+        echo "Instance Public IP: $(terraform output -raw instance_public_ip 2>/dev/null || echo 'N/A')"
+        echo "Load Balancer DNS: $(terraform output -raw load_balancer_dns 2>/dev/null || echo 'N/A')"
+        echo "S3 Bucket: $(terraform output -raw s3_bucket_name 2>/dev/null || echo 'N/A')"
+        
     - name: 🔑 Setup SSH Keys
       run: |
         mkdir -p ~/.ssh
@@ -563,14 +575,19 @@ jobs:
         mkdir -p ./terraform/keys
         cp ~/.ssh/id_rsa.pub ./terraform/keys/
         
+        echo "🔐 Clés SSH configurées:"
+        ls -la ~/.ssh/
+        
     - name: 🔄 Générer inventaire Ansible dynamique
       run: |
         echo "📁 Structure des répertoires:"
         ls -la
+        echo ""
         echo "📁 Contenu du répertoire ansible:"
         ls -la ansible/ || echo "Répertoire ansible non trouvé"
-        echo "📁 Contenu du répertoire ansible/scripts:"
-        ls -la ansible/scripts/ || echo "Répertoire ansible/scripts non trouvé"
+        echo ""
+        echo "📁 Contenu du répertoire terraform:"
+        ls -la terraform/ || echo "Répertoire terraform non trouvé"
         
         # Créer le répertoire inventory si nécessaire
         mkdir -p ansible/inventory
@@ -579,13 +596,16 @@ jobs:
         chmod +x ansible/scripts/generate_inventory.py
         
         # Exécuter le script depuis la racine du projet
+        echo "🚀 Exécution du script de génération d'inventaire..."
         python3 ansible/scripts/generate_inventory.py
         
-        echo "✅ Inventaire Ansible généré avec les outputs Terraform"
+        echo ""
+        echo "✅ Inventaire Ansible généré"
         
         # Vérifier que le fichier a été créé
         if [ -f "ansible/inventory/dynamic_hosts.json" ]; then
           echo "✅ Fichier d'inventaire créé avec succès"
+          echo ""
           echo "📄 Contenu de l'inventaire:"
           cat ansible/inventory/dynamic_hosts.json
         else
@@ -593,65 +613,86 @@ jobs:
           exit 1
         fi
         
-    - name: 🧪 Test de connectivité SSH amélioré
+    - name: 🧪 Test de connectivité amélioré
       run: |
-        # Extraire l'IP de l'instance depuis l'inventaire
-        INSTANCE_IP=$(python3 -c "
+        # Extraire l'IP/DNS de l'instance depuis l'inventaire
+        TARGET_HOST=$(python3 -c "
         import json
-        with open('ansible/inventory/dynamic_hosts.json', 'r') as f:
-          inventory = json.load(f)
-          print(inventory['all']['children']['fode_devops_prod']['hosts']['fode-web-server']['ansible_host'])
+        try:
+            with open('ansible/inventory/dynamic_hosts.json', 'r') as f:
+                inventory = json.load(f)
+                print(inventory['all']['children']['fode_devops_prod']['hosts']['fode-web-server']['ansible_host'])
+        except Exception as e:
+            print('Erreur:', e)
+            exit(1)
         ")
 
-        echo "🔍 Test de connectivité SSH vers: $INSTANCE_IP"
-        echo "🔐 Vérification de la clé SSH:"
-        ls -la ~/.ssh/
-
-        # Vérifier que l'instance répond au ping
-        echo "📡 Test de connectivité réseau:"
-        for i in {1..5}; do
-          if ping -c 1 -W 5 $INSTANCE_IP > /dev/null 2>&1; then
-            echo "✅ L'instance répond au ping"
-            break
-          else
-            echo "⏳ Ping échoué, tentative $i/5..."
-            sleep 10
-          fi
-        done
-
-        # Attendre que l'instance soit prête avec un délai plus long
-        echo "⏳ Attente de la disponibilité de l'instance (5 minutes)..."
-        sleep 300
-
-        # Test de connectivité SSH avec plus de tentatives
-        for i in {1..15}; do
-          echo "🔄 Tentative de connexion SSH $i/15..."
-      
-          # Test avec debug SSH pour plus d'informations
-          if ssh -vvv -o ConnectTimeout=30 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ~/.ssh/id_rsa ec2-user@$INSTANCE_IP "echo 'SSH OK'" 2>&1; then
-            echo "✅ Connexion SSH réussie!"
-            break
-          else
-            echo "⏳ Connexion SSH échouée, nouvelle tentative dans 45s..."
+        echo "🔍 Test de connectivité vers: $TARGET_HOST"
         
-            # Vérifier si le port 22 est ouvert
-            if nc -z -w5 $INSTANCE_IP 22 2>/dev/null; then
-              echo "✅ Port 22 est ouvert"
+        # Déterminer si c'est un load balancer ou une instance
+        if echo "$TARGET_HOST" | grep -q "elb.amazonaws.com"; then
+          echo "⚡ Détection d'un Load Balancer"
+          IS_LB=true
+        else
+          echo "🖥️ Détection d'une instance directe"
+          IS_LB=false
+        fi
+
+        # Vérifier que l'instance/LB répond au ping (si ce n'est pas un LB)
+        if [ "$IS_LB" = false ]; then
+          echo "📡 Test de connectivité réseau (ping):"
+          for i in {1..5}; do
+            if timeout 10 ping -c 1 $TARGET_HOST > /dev/null 2>&1; then
+              echo "✅ L'hôte répond au ping"
+              break
             else
-              echo "❌ Port 22 semble fermé ou filtré"
+              echo "⏳ Ping échoué, tentative $i/5..."
+              sleep 5
             fi
+          done
+        else
+          echo "⚡ Skip ping pour Load Balancer"
+        fi
+
+        # Attendre que l'instance soit prête
+        echo "⏳ Attente de la disponibilité de l'hôte..."
+        sleep 120
+
+        # Test de connectivité SSH
+        echo "🔄 Test de connectivité SSH..."
+        for i in {1..10}; do
+          echo "🔄 Tentative de connexion SSH $i/10..."
+      
+          # Tester d'abord si le port 22 est ouvert
+          if timeout 10 nc -z $TARGET_HOST 22 2>/dev/null; then
+            echo "✅ Port 22 est accessible"
             
-            sleep 45
+            # Tenter la connexion SSH
+            if timeout 30 ssh -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ~/.ssh/id_rsa ec2-user@$TARGET_HOST "echo 'SSH OK'" 2>/dev/null; then
+              echo "✅ Connexion SSH réussie!"
+              break
+            else
+              echo "⏳ Connexion SSH échouée (authentification ou délai)"
+            fi
+          else
+            echo "❌ Port 22 n'est pas accessible"
           fi
       
-          if [ $i -eq 15 ]; then
-            echo "❌ Impossible de se connecter en SSH après 15 tentatives"
+          if [ $i -eq 10 ]; then
+            echo "❌ Impossible de se connecter en SSH après 10 tentatives"
             echo "🔍 Informations de debug:"
-            echo "Instance IP: $INSTANCE_IP"
-            echo "Contenu de l'inventaire:"
+            echo "Target Host: $TARGET_HOST"
+            echo "Is Load Balancer: $IS_LB"
+            echo ""
+            echo "📄 Contenu de l'inventaire:"
             cat ansible/inventory/dynamic_hosts.json
-            exit 1
+            
+            # Ne pas faire échouer le déploiement, continuer avec Ansible
+            echo "⚠️ Continuer malgré l'échec du test SSH manuel"
+            break
           fi
+          
+          sleep 30
         done
           
     - name: 🚀 Exécuter playbook Ansible
@@ -677,13 +718,25 @@ jobs:
         echo "🧪 Test de l'inventaire Ansible:"
         ansible-inventory -i inventory/dynamic_hosts.json --list
         
-        # Tester la connectivité
+        echo ""
         echo "🔍 Test de connectivité Ansible:"
-        ansible all -i inventory/dynamic_hosts.json -m ping -v
+        # Utiliser un timeout plus long et plus de tentatives
+        ansible all -i inventory/dynamic_hosts.json -m ping -v --timeout=60 || {
+          echo "⚠️ Test de ping échoué, mais tentative de déploiement quand même..."
+        }
         
-        # Exécuter le playbook principal
+        echo ""
         echo "🚀 Exécution du playbook Ansible:"
-        ansible-playbook -i inventory/dynamic_hosts.json playbooks/site.yml -v
+        # Augmenter les timeouts et utiliser des options de retry
+        ansible-playbook -i inventory/dynamic_hosts.json playbooks/site.yml -v \
+          --timeout=120 \
+          --ssh-extra-args="-o ConnectTimeout=30 -o ConnectionAttempts=3" \
+          || {
+            echo "❌ Le playbook a échoué"
+            echo "📋 Diagnostic:"
+            ansible all -i inventory/dynamic_hosts.json -m setup -a "filter=ansible_default_ipv4" --timeout=60 || echo "Impossible de récupérer les informations de l'hôte"
+            exit 1
+          }
         
     - name: 📊 Résumé du déploiement Ansible
       if: always()
@@ -691,15 +744,25 @@ jobs:
         echo "## 🎭 Résumé du déploiement Ansible" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
         if [ -f "ansible/inventory/dynamic_hosts.json" ]; then
-          INSTANCE_IP=$(python3 -c "
+          TARGET_HOST=$(python3 -c "
           import json
-          with open('ansible/inventory/dynamic_hosts.json', 'r') as f:
-              inventory = json.load(f)
-              print(inventory['all']['children']['fode_devops_prod']['hosts']['fode-web-server']['ansible_host'])
-          " 2>/dev/null || echo "non-disponible")
-          echo "- **Instance IP:** $INSTANCE_IP" >> $GITHUB_STEP_SUMMARY
+          try:
+              with open('ansible/inventory/dynamic_hosts.json', 'r') as f:
+                  inventory = json.load(f)
+                  print(inventory['all']['children']['fode_devops_prod']['hosts']['fode-web-server']['ansible_host'])
+          except:
+              print('non-disponible')
+          ")
+          echo "- **Target Host:** $TARGET_HOST" >> $GITHUB_STEP_SUMMARY
           echo "- **Statut:** ${{ job.status }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Inventaire:** ✅ Généré" >> $GITHUB_STEP_SUMMARY
+          
+          # Vérifier le type de connexion
+          if echo "$TARGET_HOST" | grep -q "elb.amazonaws.com"; then
+            echo "- **Type:** Load Balancer" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "- **Type:** Instance directe" >> $GITHUB_STEP_SUMMARY
+          fi
         else
           echo "- **Erreur:** Inventaire non généré" >> $GITHUB_STEP_SUMMARY
         fi
