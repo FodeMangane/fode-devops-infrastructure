@@ -4,6 +4,9 @@
 # Mise à jour du système
 dnf update -y
 dnf install -y httpd htop git curl nano
+dnf install -y amazon-ssm-agent
+sudo systemctl enable amazon-ssm-agent
+sudo systemctl start amazon-ssm-agent
 
 # Création du répertoire web
 mkdir -p /var/www/html

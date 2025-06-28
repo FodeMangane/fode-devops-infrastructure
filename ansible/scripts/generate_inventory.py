@@ -7,200 +7,154 @@ import os
 def get_terraform_output(output_name):
     """Récupère un output Terraform spécifique"""
     try:
-        # Déterminer le chemin vers le répertoire terraform
         terraform_dir = './terraform'
         if not os.path.exists(terraform_dir):
             terraform_dir = '../terraform'
-            if not os.path.exists(terraform_dir):
-                print(f"❌ Répertoire terraform introuvable", file=sys.stderr)
-                return None
-        
-        print(f"🔍 Utilisation du répertoire terraform: {terraform_dir}")
         
         result = subprocess.run(
             ['terraform', 'output', '-raw', output_name],
             capture_output=True,
             text=True,
             check=True,
-            cwd=terraform_dir  # Utiliser cwd au lieu de changer le répertoire courant
+            cwd=terraform_dir
         )
         return result.stdout.strip()
-    except subprocess.CalledProcessError as e:
-        print(f"❌ Erreur lors de la récupération de {output_name}: {e}", file=sys.stderr)
-        print(f"   stderr: {e.stderr}", file=sys.stderr)
-        return None
-    except Exception as e:
-        print(f"❌ Erreur générale: {e}", file=sys.stderr)
+    except subprocess.CalledProcessError:
         return None
 
-def get_instance_public_ip(instance_id, region='eu-west-1'):
-    """Récupère l'IP publique directement depuis AWS"""
+def check_ssm_agent(instance_id, region='eu-west-1'):
+    """Vérifie si l'instance est accessible via SSM"""
     try:
-        print(f"🔍 Récupération de l'IP publique pour l'instance {instance_id}")
+        print(f"🔍 Vérification de l'accès SSM pour {instance_id}...")
+        
         result = subprocess.run([
-            'aws', 'ec2', 'describe-instances',
-            '--instance-ids', instance_id,
+            'aws', 'ssm', 'describe-instance-information',
             '--region', region,
-            '--query', 'Reservations[0].Instances[0].PublicIpAddress',
-            '--output', 'text'
-        ], capture_output=True, text=True, check=True)
-        
-        ip = result.stdout.strip()
-        print(f"🔍 Réponse AWS: {ip}")
-        return ip if ip != 'None' and ip != '' else None
-    except subprocess.CalledProcessError as e:
-        print(f"❌ Erreur AWS CLI: {e}", file=sys.stderr)
-        print(f"   stderr: {e.stderr}", file=sys.stderr)
-        return None
-    except Exception as e:
-        print(f"❌ Erreur lors de la récupération de l'IP: {e}", file=sys.stderr)
-        return None
-
-def get_instance_from_load_balancer(load_balancer_dns, region='eu-west-1'):
-    """Récupère les instances derrière le load balancer"""
-    try:
-        print(f"🔍 Recherche des instances derrière le load balancer: {load_balancer_dns}")
-        
-        # Extraire le nom du load balancer depuis le DNS
-        lb_name = load_balancer_dns.split('.')[0]
-        
-        # Récupérer les target groups du load balancer
-        result = subprocess.run([
-            'aws', 'elbv2', 'describe-target-groups',
-            '--load-balancer-arn', f'arn:aws:elasticloadbalancing:{region}:*:loadbalancer/app/{lb_name}/*',
-            '--region', region,
-            '--query', 'TargetGroups[0].TargetGroupArn',
+            '--filters', f'Key=InstanceIds,Values={instance_id}',
+            '--query', 'InstanceInformationList[0].PingStatus',
             '--output', 'text'
         ], capture_output=True, text=True)
         
-        if result.returncode != 0:
-            print("⚠️ Impossible de récupérer les target groups", file=sys.stderr)
-            return None
+        if result.returncode == 0 and result.stdout.strip() == 'Online':
+            print("✅ Instance accessible via SSM")
+            return True
+        else:
+            print("❌ Instance non accessible via SSM")
+            return False
             
-        target_group_arn = result.stdout.strip()
-        
-        # Récupérer les targets sains
-        result = subprocess.run([
-            'aws', 'elbv2', 'describe-target-health',
-            '--target-group-arn', target_group_arn,
-            '--region', region,
-            '--query', 'TargetHealthDescriptions[?TargetHealth.State==`healthy`].Target.Id',
-            '--output', 'text'
-        ], capture_output=True, text=True)
-        
-        if result.returncode == 0 and result.stdout.strip():
-            instance_ids = result.stdout.strip().split()
-            print(f"✅ Instances saines trouvées: {instance_ids}")
-            return instance_ids[0] if instance_ids else None
-        
-        return None
     except Exception as e:
-        print(f"❌ Erreur lors de la recherche via load balancer: {e}", file=sys.stderr)
-        return None
+        print(f"❌ Erreur lors de la vérification SSM: {e}")
+        return False
+
+def install_ssm_plugin():
+    """Instructions pour installer le plugin SSM"""
+    return """
+# Pour installer le plugin SSM dans GitHub Actions, ajoutez cette étape:
+- name: Install AWS Session Manager Plugin
+  run: |
+    curl "https://s3.amazonaws.com/session-manager-downloads/plugin/latest/ubuntu_64bit/session-manager-plugin.deb" -o "session-manager-plugin.deb"
+    sudo dpkg -i session-manager-plugin.deb
+    session-manager-plugin --version
+"""
 
 def main():
-    print("🚀 Démarrage de la génération de l'inventaire Ansible")
+    print("🚀 Génération d'inventaire avec AWS Systems Manager")
     
-    # Récupérer les outputs Terraform
-    print("📋 Récupération des outputs Terraform...")
+    # Récupérer les informations
     instance_id = get_terraform_output('instance_id')
+    instance_private_ip = get_terraform_output('instance_private_ip')
     s3_bucket = get_terraform_output('s3_bucket_name')
     load_balancer_dns = get_terraform_output('load_balancer_dns')
     vpc_id = get_terraform_output('vpc_id')
     
-    print(f"   Instance ID: {instance_id}")
-    print(f"   S3 Bucket: {s3_bucket}")
-    print(f"   Load Balancer DNS: {load_balancer_dns}")
-    print(f"   VPC ID: {vpc_id}")
+    print(f"📋 Instance ID: {instance_id}")
+    print(f"📋 Private IP: {instance_private_ip}")
     
-    # Récupérer l'IP publique
-    public_ip = None
-    
-    # Méthode 1: Directement depuis AWS avec l'instance ID
-    if instance_id:
-        print("🔍 Méthode 1: Récupération de l'IP publique via instance ID")
-        public_ip = get_instance_public_ip(instance_id)
-    
-    # Méthode 2: Essayer avec l'output Terraform
-    if not public_ip:
-        print("🔍 Méthode 2: Récupération de l'IP publique via output Terraform")
-        public_ip = get_terraform_output('instance_public_ip')
-    
-    # Méthode 3: Utiliser le DNS du load balancer si pas d'IP publique
-    if not public_ip and load_balancer_dns:
-        print("🔍 Méthode 3: Utilisation du DNS du load balancer")
-        public_ip = load_balancer_dns
-        print(f"⚠️ Utilisation du load balancer DNS comme point d'entrée: {public_ip}")
-    
-    # Méthode 4: Chercher les instances derrière le load balancer
-    if not public_ip and load_balancer_dns:
-        print("🔍 Méthode 4: Recherche des instances derrière le load balancer")
-        healthy_instance = get_instance_from_load_balancer(load_balancer_dns)
-        if healthy_instance:
-            public_ip = get_instance_public_ip(healthy_instance)
-    
-    if not public_ip:
-        print("❌ Impossible de récupérer une IP publique ou un point d'entrée", file=sys.stderr)
-        print(f"   Instance ID: {instance_id}", file=sys.stderr)
-        print(f"   Load Balancer DNS: {load_balancer_dns}", file=sys.stderr)
+    if not instance_id:
+        print("❌ Instance ID non trouvé")
         sys.exit(1)
     
-    print(f"✅ Point d'entrée déterminé: {public_ip}")
+    # Vérifier l'accès SSM
+    ssm_available = check_ssm_agent(instance_id)
     
-    # Déterminer le type de connexion
-    is_load_balancer = 'elb.amazonaws.com' in public_ip
-    ansible_host = public_ip
-    
-    # Configuration spécifique selon le type de connexion
-    if is_load_balancer:
-        print("⚡ Configuration pour connexion via Load Balancer")
-        ansible_user = "ec2-user"
-        ansible_port = 22
-    else:
-        print("🖥️ Configuration pour connexion directe à l'instance")
-        ansible_user = "ec2-user"
-        ansible_port = 22
-    
-    # Générer l'inventaire Ansible
-    inventory = {
-        "all": {
-            "children": {
-                "fode_devops_prod": {
-                    "hosts": {
-                        "fode-web-server": {
-                            "ansible_host": ansible_host,
-                            "ansible_user": ansible_user,
-                            "ansible_port": ansible_port,
-                            "ansible_ssh_private_key_file": "~/.ssh/id_rsa",
-                            "ansible_ssh_common_args": "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectionAttempts=3",
-                            "ansible_python_interpreter": "/usr/bin/python3",
-                            "ansible_ssh_timeout": 30,
-                            "ansible_ssh_retries": 5,
-                            "ansible_ssh_pipelining": True
+    if ssm_available:
+        print("✅ Configuration avec AWS SSM Session Manager")
+        
+        inventory = {
+            "all": {
+                "children": {
+                    "fode_devops_prod": {
+                        "hosts": {
+                            "fode-web-server": {
+                                "ansible_host": instance_id,
+                                "ansible_user": "ec2-user",
+                                "ansible_connection": "aws_ssm",
+                                "ansible_aws_ssm_bucket_name": s3_bucket,
+                                "ansible_aws_ssm_region": "eu-west-1",
+                                "ansible_python_interpreter": "/usr/bin/python3",
+                                "ansible_ssh_timeout": 60,
+                                "private_ip": instance_private_ip
+                            }
+                        },
+                        "vars": {
+                            "project_name": "fode-devops",
+                            "environment": "prod",
+                            "aws_region": "eu-west-1",
+                            "vpc_id": vpc_id,
+                            "instance_id": instance_id,
+                            "s3_bucket": s3_bucket,
+                            "load_balancer_dns": load_balancer_dns,
+                            "connection_type": "ssm",
+                            "web_port": 80,
+                            "ssl_port": 443
                         }
-                    },
-                    "vars": {
-                        "project_name": "fode-devops",
-                        "environment": "prod",
-                        "aws_region": "eu-west-1",
-                        "vpc_id": vpc_id or "vpc-03fee7dba4515b2d4",
-                        "instance_id": instance_id or "i-061597e5b27331d57",
-                        "s3_bucket": s3_bucket,
-                        "load_balancer_dns": load_balancer_dns,
-                        "is_load_balancer_connection": is_load_balancer,
-                        "web_port": 80,
-                        "ssl_port": 443,
-                        "packages": [
-                            "httpd", "git", "curl", "wget", "nano", 
-                            "htop", "tree", "unzip", "nodejs", "npm"
-                        ]
                     }
                 }
             }
         }
-    }
+        
+        # Créer aussi un fichier d'instructions pour l'installation du plugin
+        with open('ssm_setup_instructions.md', 'w') as f:
+            f.write(install_ssm_plugin())
+        
+    else:
+        print("❌ Instance non accessible via SSM")
+        print("Solutions:")
+        print("1. Vérifier que l'instance has les permissions SSM")
+        print("2. Vérifier que SSM Agent est installé et démarré")
+        print("3. Vérifier les Security Groups et NACLs")
+        
+        # Générer un inventaire de base quand même
+        inventory = {
+            "all": {
+                "children": {
+                    "fode_devops_prod": {
+                        "hosts": {
+                            "fode-web-server": {
+                                "ansible_host": instance_private_ip or instance_id,
+                                "ansible_user": "ec2-user",
+                                "ansible_connection": "local",  # Pas de connexion réelle
+                                "ansible_python_interpreter": "/usr/bin/python3",
+                                "ssm_available": False
+                            }
+                        },
+                        "vars": {
+                            "project_name": "fode-devops",
+                            "environment": "prod",
+                            "aws_region": "eu-west-1",
+                            "vpc_id": vpc_id,
+                            "instance_id": instance_id,
+                            "s3_bucket": s3_bucket,
+                            "load_balancer_dns": load_balancer_dns,
+                            "connection_type": "none",
+                            "error": "No accessible connection method found"
+                        }
+                    }
+                }
+            }
+        }
     
-    # Créer le répertoire de destination s'il n'existe pas
+    # Sauvegarder l'inventaire
     inventory_dir = 'ansible/inventory'
     if not os.path.exists('ansible'):
         inventory_dir = 'inventory'
@@ -208,15 +162,14 @@ def main():
     os.makedirs(inventory_dir, exist_ok=True)
     inventory_file = os.path.join(inventory_dir, 'dynamic_hosts.json')
     
-    # Sauvegarder l'inventaire
     with open(inventory_file, 'w') as f:
         json.dump(inventory, f, indent=2)
     
-    print(f"✅ Inventaire Ansible généré avec succès: {inventory_file}")
-    print(f"📄 Host: {ansible_host}")
-    print(f"👤 User: {ansible_user}")
-    print(f"🔌 Port: {ansible_port}")
-    print(f"🔗 Type: {'Load Balancer' if is_load_balancer else 'Instance directe'}")
+    print(f"✅ Inventaire généré: {inventory_file}")
+    
+    if ssm_available:
+        print("📋 Pour utiliser SSM, installez le plugin session-manager dans votre workflow")
+        print("📋 Voir le fichier ssm_setup_instructions.md")
 
 if __name__ == "__main__":
     main()

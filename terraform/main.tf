@@ -67,4 +67,5 @@ module "ec2" {
   public_subnets    = module.vpc.public_subnet_ids
   instance_type     = var.instance_type
   key_name          = "${var.project_name}-${var.environment}"
+  iam_instance_profile  = aws_iam_instance_profile.ssm_instance_profile.name
 }
