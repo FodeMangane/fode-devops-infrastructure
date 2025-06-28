@@ -518,7 +518,7 @@ jobs:
     if: |
       always() && 
       needs.terraform-apply.result == 'success'
-  
+
     steps:
     - name: 📥 Checkout code
       uses: actions/checkout@v4
@@ -593,39 +593,67 @@ jobs:
           exit 1
         fi
         
-    - name: 🧪 Test de connectivité SSH
+    - name: 🧪 Test de connectivité SSH amélioré
       run: |
         # Extraire l'IP de l'instance depuis l'inventaire
         INSTANCE_IP=$(python3 -c "
         import json
         with open('ansible/inventory/dynamic_hosts.json', 'r') as f:
-            inventory = json.load(f)
-            print(inventory['all']['children']['fode_devops_prod']['hosts']['fode-web-server']['ansible_host'])
+          inventory = json.load(f)
+          print(inventory['all']['children']['fode_devops_prod']['hosts']['fode-web-server']['ansible_host'])
         ")
-        
+
         echo "🔍 Test de connectivité SSH vers: $INSTANCE_IP"
-        
-        # Attendre que l'instance soit prête
-        echo "⏳ Attente de la disponibilité de l'instance..."
-        sleep 120
-        
-        # Test de connectivité SSH avec timeout
-        for i in {1..10}; do
-          echo "🔄 Tentative de connexion SSH $i/10..."
-          if ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ~/.ssh/id_rsa ec2-user@$INSTANCE_IP "echo 'SSH OK'" 2>/dev/null; then
+        echo "🔐 Vérification de la clé SSH:"
+        ls -la ~/.ssh/
+
+        # Vérifier que l'instance répond au ping
+        echo "📡 Test de connectivité réseau:"
+        for i in {1..5}; do
+          if ping -c 1 -W 5 $INSTANCE_IP > /dev/null 2>&1; then
+            echo "✅ L'instance répond au ping"
+            break
+          else
+            echo "⏳ Ping échoué, tentative $i/5..."
+            sleep 10
+          fi
+        done
+
+        # Attendre que l'instance soit prête avec un délai plus long
+        echo "⏳ Attente de la disponibilité de l'instance (5 minutes)..."
+        sleep 300
+
+        # Test de connectivité SSH avec plus de tentatives
+        for i in {1..15}; do
+          echo "🔄 Tentative de connexion SSH $i/15..."
+      
+          # Test avec debug SSH pour plus d'informations
+          if ssh -vvv -o ConnectTimeout=30 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ~/.ssh/id_rsa ec2-user@$INSTANCE_IP "echo 'SSH OK'" 2>&1; then
             echo "✅ Connexion SSH réussie!"
             break
           else
-            echo "⏳ Connexion SSH échouée, nouvelle tentative dans 30s..."
-            sleep 30
+            echo "⏳ Connexion SSH échouée, nouvelle tentative dans 45s..."
+        
+            # Vérifier si le port 22 est ouvert
+            if nc -z -w5 $INSTANCE_IP 22 2>/dev/null; then
+              echo "✅ Port 22 est ouvert"
+            else
+              echo "❌ Port 22 semble fermé ou filtré"
+            fi
+            
+            sleep 45
           fi
-          
-          if [ $i -eq 10 ]; then
-            echo "❌ Impossible de se connecter en SSH après 10 tentatives"
+      
+          if [ $i -eq 15 ]; then
+            echo "❌ Impossible de se connecter en SSH après 15 tentatives"
+            echo "🔍 Informations de debug:"
+            echo "Instance IP: $INSTANCE_IP"
+            echo "Contenu de l'inventaire:"
+            cat ansible/inventory/dynamic_hosts.json
             exit 1
           fi
         done
-        
+          
     - name: 🚀 Exécuter playbook Ansible
       working-directory: ./ansible
       run: |

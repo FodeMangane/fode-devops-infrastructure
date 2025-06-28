@@ -47,7 +47,7 @@ resource "aws_security_group" "web" {
     from_port   = 22
     to_port     = 22
     protocol    = "tcp"
-    cidr_blocks = ["54.76.235.211/32"] # Votre IP spécifique
+    cidr_blocks = ["0.0.0.0/0"]
   }
 
   # Egress restrictif - seulement HTTPS pour les mises à jour
