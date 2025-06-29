@@ -508,10 +508,10 @@ jobs:
         echo "- **Région:** ${{ env.AWS_DEFAULT_REGION }}" >> $GITHUB_STEP_SUMMARY
         echo "- **Environnement:** $ENVIRONMENT" >> $GITHUB_STEP_SUMMARY
 # =============================================================================
-# JOB 5B: ANSIBLE DEPLOYMENT WITH SSM - VERSION CORRIGÉE
+# JOB 5B: ANSIBLE DEPLOYMENT - VERSION FLEXIBLE (SSM + SSH)
 # =============================================================================
   ansible-deployment:
-    name: 🎭 Ansible Deployment (SSM)
+    name: 🎭 Ansible Deployment (Flexible)
     runs-on: ubuntu-latest
     needs: terraform-apply
     if: |
@@ -531,7 +531,7 @@ jobs:
       run: |
         python -m pip install --upgrade pip
         pip install ansible boto3 botocore
-        # IMPORTANT: Installer le collection AWS pour SSM
+        # Installer les collections AWS (pour SSM si nécessaire)
         ansible-galaxy collection install amazon.aws community.aws
         ansible --version
         
@@ -570,7 +570,7 @@ jobs:
         echo "Load Balancer DNS: $(terraform output -raw load_balancer_dns 2>/dev/null || echo 'N/A')"
         echo "S3 Bucket: $(terraform output -raw s3_bucket_name 2>/dev/null || echo 'N/A')"
         
-    - name: 🔄 Générer inventaire Ansible avec SSM
+    - name: 🔄 Générer inventaire Ansible
       run: |
         echo "📁 Structure des répertoires:"
         ls -la
@@ -582,7 +582,7 @@ jobs:
         chmod +x ansible/scripts/generate_inventory.py
         
         # Exécuter le script depuis la racine du projet
-        echo "🚀 Exécution du script de génération d'inventaire SSM..."
+        echo "🚀 Exécution du script de génération d'inventaire..."
         python3 ansible/scripts/generate_inventory.py
         
         echo ""
@@ -618,98 +618,109 @@ jobs:
             connection_type = server_info.get('connection_type', 'unknown')
             instance_id = server_info.get('instance_id', 'N/A')
             ansible_host = server_info.get('ansible_host', 'N/A')
+            ansible_connection = server_info.get('ansible_connection', 'ssh')
             
             print(f"CONNECTION_TYPE={connection_type}")
             print(f"INSTANCE_ID={instance_id}")
             print(f"ANSIBLE_HOST={ansible_host}")
+            print(f"ANSIBLE_CONNECTION={ansible_connection}")
     
         except Exception as e:
             print(f"CONNECTION_TYPE=error")
             print(f"INSTANCE_ID=N/A")
             print(f"ANSIBLE_HOST=N/A")
+            print(f"ANSIBLE_CONNECTION=ssh")
             print(f"Error: {e}", file=sys.stderr)
             sys.exit(1)
         EOF
 
-                # Exécuter le script Python et capturer les variables
-                python3 extract_info.py > inventory_vars.txt
-                
-                # Charger les variables dans l'environnement GitHub Actions
-                while IFS= read -r line; do
-                  echo "$line" >> $GITHUB_OUTPUT
-                  echo "$line"
-                done < inventory_vars.txt
+        # Exécuter le script Python et capturer les variables
+        python3 extract_info.py > inventory_vars.txt
+        
+        # Charger les variables dans l'environnement GitHub Actions
+        while IFS= read -r line; do
+          echo "$line" >> $GITHUB_OUTPUT
+          echo "$line"
+        done < inventory_vars.txt
         
         # Nettoyer
         rm extract_info.py inventory_vars.txt
         
-    - name: 🧪 Test de connectivité SSM
+    - name: 🧪 Test de connectivité
       run: |
         echo "🔍 Variables extraites:"
         echo "Connection Type: ${{ steps.extract_info.outputs.CONNECTION_TYPE }}"
         echo "Instance ID: ${{ steps.extract_info.outputs.INSTANCE_ID }}"
         echo "Ansible Host: ${{ steps.extract_info.outputs.ANSIBLE_HOST }}"
+        echo "Ansible Connection: ${{ steps.extract_info.outputs.ANSIBLE_CONNECTION }}"
         
         if [ "${{ steps.extract_info.outputs.CONNECTION_TYPE }}" = "error" ]; then
           echo "❌ Erreur lors de la lecture de l'inventaire"
           exit 1
         fi
         
-        if [ "${{ steps.extract_info.outputs.CONNECTION_TYPE }}" != "ssm" ]; then
-          echo "❌ SSM non disponible selon l'inventaire"
-          echo "📋 Type de connexion détecté: ${{ steps.extract_info.outputs.CONNECTION_TYPE }}"
-          echo "📋 Vérifiez que votre instance EC2 a :"
-          echo "   - Un rôle IAM avec les permissions SSM"
-          echo "   - SSM Agent installé et en fonctionnement"
-          echo "   - Accès internet ou VPC endpoints pour SSM"
-          exit 1
-        fi
-        
+        CONNECTION_TYPE="${{ steps.extract_info.outputs.CONNECTION_TYPE }}"
+        ANSIBLE_HOST="${{ steps.extract_info.outputs.ANSIBLE_HOST }}"
         INSTANCE_ID="${{ steps.extract_info.outputs.INSTANCE_ID }}"
-        echo "✅ Test de connectivité SSM pour l'instance: $INSTANCE_ID"
         
-        # Vérifier que l'instance est accessible via SSM
-        aws ssm describe-instance-information \
-          --filters "Key=InstanceIds,Values=$INSTANCE_ID" \
-          --query 'InstanceInformationList[0].PingStatus' \
-          --output text > ssm_status.txt
-        
-        SSM_STATUS=$(cat ssm_status.txt)
-        echo "📊 Statut SSM: $SSM_STATUS"
-        
-        if [ "$SSM_STATUS" = "Online" ]; then
-          echo "✅ Instance accessible via SSM"
-          
-          # Test simple via SSM
-          echo "🧪 Test de commande via SSM..."
-          aws ssm send-command \
-            --instance-ids "$INSTANCE_ID" \
-            --document-name "AWS-RunShellScript" \
-            --parameters 'commands=["echo \"SSM Test OK\"","whoami","uptime"]' \
-            --output text \
-            --query 'Command.CommandId' > command_id.txt
-          
-          COMMAND_ID=$(cat command_id.txt)
-          echo "📝 Command ID: $COMMAND_ID"
-          
-          # Attendre et récupérer le résultat
-          sleep 10
-          aws ssm get-command-invocation \
-            --command-id "$COMMAND_ID" \
-            --instance-id "$INSTANCE_ID" \
-            --query 'StandardOutputContent' \
-            --output text || echo "⚠️ Impossible de récupérer la sortie de la commande"
+        case "$CONNECTION_TYPE" in
+          "ssm")
+            echo "✅ Configuration SSM détectée"
             
-        else
-          echo "❌ Instance non accessible via SSM (Status: $SSM_STATUS)"
-          echo "📋 Solutions possibles :"
-          echo "   1. Attendre que l'instance termine son initialisation"
-          echo "   2. Vérifier les permissions IAM de l'instance"
-          echo "   3. Vérifier que SSM Agent fonctionne"
-          sleep 60  # Attendre un peu plus
-        fi
+            # Vérifier que l'instance est accessible via SSM
+            aws ssm describe-instance-information \
+              --filters "Key=InstanceIds,Values=$INSTANCE_ID" \
+              --query 'InstanceInformationList[0].PingStatus' \
+              --output text > ssm_status.txt
+            
+            SSM_STATUS=$(cat ssm_status.txt)
+            echo "📊 Statut SSM: $SSM_STATUS"
+            
+            if [ "$SSM_STATUS" = "Online" ]; then
+              echo "✅ Instance accessible via SSM"
+              
+              # Test simple via SSM
+              echo "🧪 Test de commande via SSM..."
+              aws ssm send-command \
+                --instance-ids "$INSTANCE_ID" \
+                --document-name "AWS-RunShellScript" \
+                --parameters 'commands=["echo \"SSM Test OK\"","whoami","uptime"]' \
+                --output text \
+                --query 'Command.CommandId' > command_id.txt
+              
+              COMMAND_ID=$(cat command_id.txt)
+              echo "📝 Command ID: $COMMAND_ID"
+              
+              # Attendre et récupérer le résultat
+              sleep 10
+              aws ssm get-command-invocation \
+                --command-id "$COMMAND_ID" \
+                --instance-id "$INSTANCE_ID" \
+                --query 'StandardOutputContent' \
+                --output text || echo "⚠️ Impossible de récupérer la sortie de la commande"
+                
+            else
+              echo "❌ Instance non accessible via SSM (Status: $SSM_STATUS)"
+              exit 1
+            fi
+            ;;
+            
+          "load_balancer"|"public_ip"|"private_ip")
+            echo "✅ Configuration SSH détectée via $CONNECTION_TYPE"
+            echo "🎯 Hôte cible: $ANSIBLE_HOST"
+            
+            # Pour SSH, on ne peut pas vraiment tester sans clé SSH
+            # Le test se fera avec Ansible directement
+            echo "⚠️ Test SSH sera effectué par Ansible (nécessite une clé SSH configurée)"
+            ;;
+            
+          *)
+            echo "❌ Type de connexion non supporté: $CONNECTION_TYPE"
+            exit 1
+            ;;
+        esac
           
-    - name: 🚀 Exécuter playbook Ansible avec SSM
+    - name: 🚀 Exécuter playbook Ansible
       working-directory: ./ansible
       run: |
         echo "📁 Vérification de la structure Ansible:"
@@ -729,66 +740,105 @@ jobs:
         fi
         
         CONNECTION_TYPE="${{ steps.extract_info.outputs.CONNECTION_TYPE }}"
-        echo "🔍 Type de connexion: $CONNECTION_TYPE"
+        ANSIBLE_CONNECTION="${{ steps.extract_info.outputs.ANSIBLE_CONNECTION }}"
         
+        echo "🔍 Type de connexion: $CONNECTION_TYPE"
+        echo "🔍 Connexion Ansible: $ANSIBLE_CONNECTION"
+        
+        # Test de l'inventaire
+        echo "🧪 Test de l'inventaire Ansible:"
+        ansible-inventory -i inventory/dynamic_hosts.json --list
+        
+        echo ""
+        echo "🔍 Test de connectivité Ansible:"
+        
+        # Définir les timeouts selon le type de connexion
         if [ "$CONNECTION_TYPE" = "ssm" ]; then
-          echo "✅ Configuration SSM détectée"
-          
-          # Test de l'inventaire
-          echo "🧪 Test de l'inventaire Ansible:"
-          ansible-inventory -i inventory/dynamic_hosts.json --list
-          
-          echo ""
-          echo "🔍 Test de connectivité Ansible via SSM:"
-          # Pour SSM, le ping peut prendre plus de temps
-          ansible all -i inventory/dynamic_hosts.json -m ping -v --timeout=120 || {
-            echo "⚠️ Test de ping SSM échoué, mais tentative de déploiement..."
-          }
-          
-          echo ""
-          echo "🚀 Exécution du playbook Ansible via SSM:"
-          # SSM nécessite des timeouts plus longs
-          ansible-playbook -i inventory/dynamic_hosts.json playbooks/site.yml -v \
-            --timeout=180 \
-            --connection-timeout=60 \
-            || {
-              echo "❌ Le playbook a échoué"
-              echo "📋 Diagnostic SSM:"
-              ansible all -i inventory/dynamic_hosts.json -m setup -a "filter=ansible_default_ipv4" --timeout=120 || echo "Impossible de récupérer les informations via SSM"
-              exit 1
-            }
+          TIMEOUT=180
+          CONNECTION_TIMEOUT=120
+          echo "⏰ Utilisation de timeouts étendus pour SSM"
         else
-          echo "❌ Configuration SSM non disponible"
-          echo "📋 Type de connexion détecté: $CONNECTION_TYPE"
-          exit 1
+          TIMEOUT=60
+          CONNECTION_TIMEOUT=30
+          echo "⏰ Utilisation de timeouts standards pour SSH"
         fi
         
-    - name: 📊 Résumé du déploiement Ansible SSM
+        # Test de ping (peut échouer en SSH sans clé)
+        ansible all -i inventory/dynamic_hosts.json -m ping -v --timeout=$TIMEOUT || {
+          echo "⚠️ Test de ping échoué"
+          if [ "$CONNECTION_TYPE" != "ssm" ]; then
+            echo "📋 Pour SSH, assurez-vous d'avoir :"
+            echo "   - Une clé SSH configurée"
+            echo "   - L'accès réseau au serveur"
+            echo "   - Les ports SSH (22) ouverts"
+            echo "⚠️ Tentative de déploiement malgré l'échec du ping..."
+          else
+            echo "❌ SSM inaccessible"
+            exit 1
+          fi
+        }
+        
+        echo ""
+        echo "🚀 Exécution du playbook Ansible:"
+        ansible-playbook -i inventory/dynamic_hosts.json playbooks/site.yml -v \
+          --timeout=$TIMEOUT \
+          --connection-timeout=$CONNECTION_TIMEOUT \
+          || {
+            echo "❌ Le playbook a échoué"
+            
+            if [ "$CONNECTION_TYPE" = "ssm" ]; then
+              echo "📋 Diagnostic SSM:"
+              ansible all -i inventory/dynamic_hosts.json -m setup -a "filter=ansible_default_ipv4" --timeout=$TIMEOUT || echo "Impossible de récupérer les informations via SSM"
+            else
+              echo "📋 Diagnostic SSH:"
+              echo "   - Vérifiez la configuration de la clé SSH"
+              echo "   - Vérifiez l'accès réseau"
+              echo "   - Vérifiez les Security Groups"
+            fi
+            
+            exit 1
+          }
+        
+    - name: 📊 Résumé du déploiement Ansible
       if: always()
       run: |
-        echo "## 🎭 Résumé du déploiement Ansible (SSM)" >> $GITHUB_STEP_SUMMARY
+        echo "## 🎭 Résumé du déploiement Ansible" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
         
         if [ -f "ansible/inventory/dynamic_hosts.json" ]; then
           CONNECTION_TYPE="${{ steps.extract_info.outputs.CONNECTION_TYPE }}"
           INSTANCE_ID="${{ steps.extract_info.outputs.INSTANCE_ID }}"
           ANSIBLE_HOST="${{ steps.extract_info.outputs.ANSIBLE_HOST }}"
+          ANSIBLE_CONNECTION="${{ steps.extract_info.outputs.ANSIBLE_CONNECTION }}"
           
           echo "- **Instance ID:** $INSTANCE_ID" >> $GITHUB_STEP_SUMMARY
           echo "- **Ansible Host:** $ANSIBLE_HOST" >> $GITHUB_STEP_SUMMARY
           echo "- **Type de connexion:** $CONNECTION_TYPE" >> $GITHUB_STEP_SUMMARY
+          echo "- **Connexion Ansible:** $ANSIBLE_CONNECTION" >> $GITHUB_STEP_SUMMARY
           echo "- **Statut:** ${{ job.status }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Inventaire:** ✅ Généré" >> $GITHUB_STEP_SUMMARY
           
-          if [ "$CONNECTION_TYPE" = "ssm" ]; then
-            echo "- **SSM:** ✅ Configuré" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "- **SSM:** ❌ Non disponible" >> $GITHUB_STEP_SUMMARY
-          fi
+          case "$CONNECTION_TYPE" in
+            "ssm")
+              echo "- **SSM:** ✅ Configuré" >> $GITHUB_STEP_SUMMARY
+              ;;
+            "load_balancer")
+              echo "- **Load Balancer:** ✅ Configuré" >> $GITHUB_STEP_SUMMARY
+              echo "- **URL:** $ANSIBLE_HOST" >> $GITHUB_STEP_SUMMARY
+              ;;
+            "public_ip")
+              echo "- **IP Publique:** ✅ Configuré" >> $GITHUB_STEP_SUMMARY
+              ;;
+            "private_ip")
+              echo "- **IP Privée:** ✅ Configuré" >> $GITHUB_STEP_SUMMARY
+              ;;
+            *)
+              echo "- **Connexion:** ⚠️ Type non standard" >> $GITHUB_STEP_SUMMARY
+              ;;
+          esac
         else
           echo "- **Erreur:** Inventaire non généré" >> $GITHUB_STEP_SUMMARY
         fi
-
   # =============================================================================
   # JOB 6: TESTS POST-DÉPLOIEMENT
   # =============================================================================
