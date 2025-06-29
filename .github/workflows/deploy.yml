@@ -507,7 +507,7 @@ jobs:
         fi
         echo "- **Région:** ${{ env.AWS_DEFAULT_REGION }}" >> $GITHUB_STEP_SUMMARY
         echo "- **Environnement:** $ENVIRONMENT" >> $GITHUB_STEP_SUMMARY
-# =============================================================================
+    # =============================================================================
 # JOB 5B: ANSIBLE DEPLOYMENT - VERSION FLEXIBLE (SSM + SSH)
 # =============================================================================
   ansible-deployment:
@@ -583,9 +583,7 @@ jobs:
         
         # Exécuter le script depuis la racine du projet
         echo "🚀 Exécution du script de génération d'inventaire..."
-        cd ansible/scripts
-        python3 generate_inventory.py
-        cd ../..
+        python3 ansible/scripts/generate_inventory.py
         
         echo ""
         echo "✅ Inventaire Ansible généré"
@@ -596,9 +594,6 @@ jobs:
           echo ""
           echo "📄 Contenu de l'inventaire:"
           cat ansible/inventory/dynamic_hosts.json
-          echo ""
-          echo "🔍 Validation JSON:"
-          python3 -m json.tool ansible/inventory/dynamic_hosts.json > /dev/null && echo "✅ JSON valide" || echo "❌ JSON invalide"
         else
           echo "❌ Échec de la création du fichier d'inventaire"
           exit 1
@@ -760,9 +755,11 @@ jobs:
         # Définir les timeouts selon le type de connexion
         if [ "$CONNECTION_TYPE" = "ssm" ]; then
           TIMEOUT=180
+          CONNECTION_TIMEOUT=120
           echo "⏰ Utilisation de timeouts étendus pour SSM"
         else
           TIMEOUT=60
+          CONNECTION_TIMEOUT=30
           echo "⏰ Utilisation de timeouts standards pour SSH"
         fi
         
@@ -783,9 +780,9 @@ jobs:
         
         echo ""
         echo "🚀 Exécution du playbook Ansible:"
-        # CORRECTION: Suppression de --connection-timeout qui n'existe pas
         ansible-playbook -i inventory/dynamic_hosts.json playbooks/site.yml -v \
           --timeout=$TIMEOUT \
+          --connection-timeout=$CONNECTION_TIMEOUT \
           || {
             echo "❌ Le playbook a échoué"
             
@@ -842,57 +839,58 @@ jobs:
         else
           echo "- **Erreur:** Inventaire non généré" >> $GITHUB_STEP_SUMMARY
         fi
-  # =============================================================================
-  # JOB 6: TESTS POST-DÉPLOIEMENT
-  # =============================================================================
+
+    # =============================================================================
+    # JOB 6: TESTS POST-DÉPLOIEMENT
+    # =============================================================================
   post-deployment-tests:
-    name: 🧪 Tests Post-Déploiement
-    runs-on: ubuntu-latest
-    needs: [terraform-apply, ansible-deployment]
-    if: |
-      always() && 
-      needs.terraform-apply.result == 'success' &&
-      needs.ansible-deployment.result == 'success' &&
-      needs.terraform-apply.outputs.load_balancer_dns != 'non-disponible'
-    
-    steps:
-    - name: 📥 Checkout code
-      uses: actions/checkout@v4
-        
-    - name: 🧪 Test Load Balancer
-      run: |
-        # Récupérer le DNS du Load Balancer
-        LB_DNS="${{ needs.terraform-apply.outputs.load_balancer_dns }}"
-        
-        if [ "$LB_DNS" = "non-disponible" ] || [ -z "$LB_DNS" ]; then
-          echo "⚠️ Load Balancer DNS non disponible, skip des tests"
-          exit 0
-        fi
-        
-        # Attendre que le Load Balancer soit prêt
-        echo "⏳ Attente du démarrage du Load Balancer..."
-        sleep 120
-        
-        # Test de connectivité HTTP
-        echo "🌐 Test de connectivité HTTP via Load Balancer..."
-        for i in {1..15}; do
-          if curl -f -s http://$LB_DNS; then
-            echo "✅ Load Balancer accessible!"
-            break
-          else
-            echo "⏳ Tentative $i/15..."
-            sleep 20
+      name: 🧪 Tests Post-Déploiement
+      runs-on: ubuntu-latest
+      needs: [terraform-apply, ansible-deployment]
+      if: |
+        always() && 
+        needs.terraform-apply.result == 'success' &&
+        needs.ansible-deployment.result == 'success' &&
+        needs.terraform-apply.outputs.load_balancer_dns != 'non-disponible'
+      
+      steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+          
+      - name: 🧪 Test Load Balancer
+        run: |
+          # Récupérer le DNS du Load Balancer
+          LB_DNS="${{ needs.terraform-apply.outputs.load_balancer_dns }}"
+          
+          if [ "$LB_DNS" = "non-disponible" ] || [ -z "$LB_DNS" ]; then
+            echo "⚠️ Load Balancer DNS non disponible, skip des tests"
+            exit 0
           fi
-        done
-        
-        # Test de contenu
-        echo "📄 Test du contenu..."
-        CONTENT=$(curl -s http://$LB_DNS || echo "")
-        if echo "$CONTENT" | grep -q "Fode-DevOps\|Welcome\|nginx\|Apache"; then
-          echo "✅ Contenu correct détecté!"
-        else
-          echo "⚠️ Contenu inattendu, mais service accessible"
-        fi
+          
+          # Attendre que le Load Balancer soit prêt
+          echo "⏳ Attente du démarrage du Load Balancer..."
+          sleep 120
+          
+          # Test de connectivité HTTP
+          echo "🌐 Test de connectivité HTTP via Load Balancer..."
+          for i in {1..15}; do
+            if curl -f -s http://$LB_DNS; then
+              echo "✅ Load Balancer accessible!"
+              break
+            else
+              echo "⏳ Tentative $i/15..."
+              sleep 20
+            fi
+          done
+          
+          # Test de contenu
+          echo "📄 Test du contenu..."
+          CONTENT=$(curl -s http://$LB_DNS || echo "")
+          if echo "$CONTENT" | grep -q "Fode-DevOps\|Welcome\|nginx\|Apache"; then
+            echo "✅ Contenu correct détecté!"
+          else
+            echo "⚠️ Contenu inattendu, mais service accessible"
+          fi
 
   # =============================================================================
   # JOB 7: TERRAFORM DESTROY

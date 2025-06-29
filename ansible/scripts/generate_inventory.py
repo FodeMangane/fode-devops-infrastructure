@@ -40,18 +40,12 @@ def generate_inventory():
     project_root = script_dir.parent  # Remonte d'un niveau depuis ansible/scripts/
     terraform_dir = project_root / "terraform"
     
-    print(f"Script directory: {script_dir}")
-    print(f"Project root: {project_root}")
-    print(f"Terraform directory: {terraform_dir}")
-    
     if not terraform_dir.exists():
         print(f"❌ Répertoire Terraform non trouvé: {terraform_dir}")
         sys.exit(1)
     
     # Récupérer les outputs Terraform
     outputs = {}
-    
-    # Liste des outputs possibles
     possible_outputs = [
         'instance_id',
         'instance_private_ip',
@@ -61,14 +55,10 @@ def generate_inventory():
         'security_group_id'
     ]
     
-    print("🔍 Récupération des outputs Terraform...")
     for output in possible_outputs:
         value = get_terraform_output(output, terraform_dir)
-        if value and value != "":
+        if value:
             outputs[output] = value
-            print(f"  ✅ {output}: {value}")
-        else:
-            print(f"  ⚠️ {output}: non disponible")
     
     if not outputs:
         print("❌ Aucun output Terraform trouvé")
@@ -82,17 +72,13 @@ def generate_inventory():
     if 'load_balancer_dns' in outputs:
         connection_type = "load_balancer"
         ansible_host = outputs['load_balancer_dns']
-        ansible_connection = "ssh"
     elif 'instance_public_ip' in outputs:
         connection_type = "public_ip"
         ansible_host = outputs['instance_public_ip']
-        ansible_connection = "ssh"
     elif 'instance_private_ip' in outputs:
         connection_type = "private_ip"
         ansible_host = outputs['instance_private_ip']
-        ansible_connection = "ssh"
     elif 'instance_id' in outputs:
-        # Utiliser SSM si seulement l'ID d'instance est disponible
         connection_type = "ssm"
         ansible_host = outputs['instance_id']
         ansible_connection = "aws_ssm"
@@ -101,12 +87,7 @@ def generate_inventory():
         print("❌ Impossible de déterminer l'hôte cible")
         sys.exit(1)
     
-    print(f"🎯 Configuration détectée:")
-    print(f"  - Type de connexion: {connection_type}")
-    print(f"  - Hôte Ansible: {ansible_host}")
-    print(f"  - Connexion Ansible: {ansible_connection}")
-    
-    # Construire l'inventaire Ansible
+    # Construire l'inventaire Ansible au format correct
     inventory = {
         "_meta": {
             "hostvars": {
@@ -118,53 +99,37 @@ def generate_inventory():
                     "instance_private_ip": outputs.get('instance_private_ip', 'N/A'),
                     "instance_public_ip": outputs.get('instance_public_ip', 'N/A'),
                     "s3_bucket_name": outputs.get('s3_bucket_name', 'N/A'),
-                    "security_group_id": outputs.get('security_group_id', 'N/A')
+                    "security_group_id": outputs.get('security_group_id', 'N/A'),
+                    "ansible_user": "ec2-user",
+                    "ansible_ssh_common_args": "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null",
+                    "ansible_python_interpreter": "/usr/bin/python3"
                 }
             }
         },
         "all": {
             "children": {
-                "web_servers": {}
+                "web_servers": {
+                    "hosts": [
+                        "fode-web-server"
+                    ]
+                }
             }
-        },
-        "web_servers": {
-            "hosts": [
-                "fode-web-server"
-            ]
         }
     }
-    
-    # Configuration spécifique selon le type de connexion
-    if ansible_connection == "aws_ssm":
-        inventory["_meta"]["hostvars"]["fode-web-server"].update({
-            "ansible_aws_ssm_bucket_name": outputs.get('s3_bucket_name', ''),
-            "ansible_aws_ssm_region": os.environ.get('AWS_DEFAULT_REGION', 'us-east-1'),
-            "ansible_python_interpreter": "/usr/bin/python3"
-        })
-    elif ansible_connection == "ssh":
-        inventory["_meta"]["hostvars"]["fode-web-server"].update({
-            "ansible_user": "ec2-user",
-            "ansible_ssh_common_args": "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null",
-            "ansible_python_interpreter": "/usr/bin/python3"
-        })
-    
+
     # Créer le répertoire d'inventaire si nécessaire
     inventory_dir = script_dir.parent / "inventory"
     inventory_dir.mkdir(exist_ok=True)
     
-    # Sauvegarder l'inventaire
     inventory_file = inventory_dir / "dynamic_hosts.json"
     
     try:
         with open(inventory_file, 'w') as f:
             json.dump(inventory, f, indent=2)
-        
         print(f"✅ Inventaire généré avec succès: {inventory_file}")
         print("📄 Contenu de l'inventaire:")
         print(json.dumps(inventory, indent=2))
-        
         return True
-        
     except Exception as e:
         print(f"❌ Erreur lors de la sauvegarde: {e}")
         return False
