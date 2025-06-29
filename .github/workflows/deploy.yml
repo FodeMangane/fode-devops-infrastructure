@@ -569,6 +569,11 @@ jobs:
         echo "Instance Private IP: $(terraform output -raw instance_private_ip 2>/dev/null || echo 'N/A')"
         echo "Load Balancer DNS: $(terraform output -raw load_balancer_dns 2>/dev/null || echo 'N/A')"
         echo "S3 Bucket: $(terraform output -raw s3_bucket_name 2>/dev/null || echo 'N/A')"
+    
+    - name: 📦 Exécution du script de génération d'inventaire
+      run: |
+        python3 ansible/scripts/generate_inventory.py
+      working-directory: ${{ github.workspace }}
         
     - name: 🔄 Générer inventaire Ansible
       run: |

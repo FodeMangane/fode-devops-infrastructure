@@ -37,7 +37,7 @@ def generate_inventory():
     
     # Déterminer le répertoire Terraform
     script_dir = Path(__file__).parent
-    project_root = script_dir.parent  # Remonte d'un niveau depuis ansible/scripts/
+    project_root = script_dir.parent.parent  # remonte de deux niveaux, vers la racine
     terraform_dir = project_root / "terraform"
     
     if not terraform_dir.exists():
