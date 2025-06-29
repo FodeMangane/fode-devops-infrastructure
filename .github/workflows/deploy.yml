@@ -583,7 +583,9 @@ jobs:
         
         # Exécuter le script depuis la racine du projet
         echo "🚀 Exécution du script de génération d'inventaire..."
-        python3 ansible/scripts/generate_inventory.py
+        cd ansible/scripts
+        python3 generate_inventory.py
+        cd ../..
         
         echo ""
         echo "✅ Inventaire Ansible généré"
@@ -594,6 +596,9 @@ jobs:
           echo ""
           echo "📄 Contenu de l'inventaire:"
           cat ansible/inventory/dynamic_hosts.json
+          echo ""
+          echo "🔍 Validation JSON:"
+          python3 -m json.tool ansible/inventory/dynamic_hosts.json > /dev/null && echo "✅ JSON valide" || echo "❌ JSON invalide"
         else
           echo "❌ Échec de la création du fichier d'inventaire"
           exit 1
@@ -755,11 +760,9 @@ jobs:
         # Définir les timeouts selon le type de connexion
         if [ "$CONNECTION_TYPE" = "ssm" ]; then
           TIMEOUT=180
-          CONNECTION_TIMEOUT=120
           echo "⏰ Utilisation de timeouts étendus pour SSM"
         else
           TIMEOUT=60
-          CONNECTION_TIMEOUT=30
           echo "⏰ Utilisation de timeouts standards pour SSH"
         fi
         
@@ -780,9 +783,9 @@ jobs:
         
         echo ""
         echo "🚀 Exécution du playbook Ansible:"
+        # CORRECTION: Suppression de --connection-timeout qui n'existe pas
         ansible-playbook -i inventory/dynamic_hosts.json playbooks/site.yml -v \
           --timeout=$TIMEOUT \
-          --connection-timeout=$CONNECTION_TIMEOUT \
           || {
             echo "❌ Le playbook a échoué"
             
