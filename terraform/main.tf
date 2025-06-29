@@ -59,13 +59,13 @@ module "s3" {
 module "ec2" {
   source = "./modules/ec2"
 
-  project_name      = var.project_name
-  environment       = var.environment
-  vpc_id            = module.vpc.vpc_id
-  vpc_cidr          = module.vpc.vpc_cidr_block
-  private_subnet_id = module.vpc.private_subnet_ids[0]
-  public_subnets    = module.vpc.public_subnet_ids
-  instance_type     = var.instance_type
-  key_name          = "${var.project_name}-${var.environment}"
-  iam_instance_profile  = aws_iam_instance_profile.ssm_instance_profile.name
+  project_name         = var.project_name
+  environment          = var.environment
+  vpc_id               = module.vpc.vpc_id
+  vpc_cidr             = module.vpc.vpc_cidr_block
+  private_subnet_id    = module.vpc.private_subnet_ids[0]
+  public_subnets       = module.vpc.public_subnet_ids
+  instance_type        = var.instance_type
+  key_name             = "${var.project_name}-${var.environment}"
+  iam_instance_profile = aws_iam_instance_profile.ssm_instance_profile.name
 }

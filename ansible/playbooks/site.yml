@@ -1,5 +1,5 @@
 # =============================================================================
-# ANSIBLE/PLAYBOOKS/SITE.YML - Playbook principal Fode-DevOps
+# ANSIBLE/PLAYBOOKS/SITE.YML - Playbook principal Fode-DevOps (CORRIGÉ)
 # =============================================================================
 ---
 - name: 🚀 Configuration complète infrastructure Fode-DevOps
@@ -18,6 +18,28 @@
       Serveur: {{ inventory_hostname }}
       ======================================
 
+    # Variables pour les packages selon la distribution
+    packages_redhat:
+      - httpd
+      - wget
+      - curl
+      - git
+      - vim
+      - htop
+      - tree
+      - net-tools
+      
+    packages_debian:
+      - apache2
+      - wget
+      - curl
+      - git
+      - vim
+      - htop
+      - tree
+      - net-tools
+      - ufw
+
   tasks:
     - name: 📢 Affichage bannière Fode-DevOps
       debug:
@@ -29,39 +51,103 @@
           - hardware
           - network
           - virtual
+          - distribution
 
-    - name: 🔄 Mise à jour du système
+    - name: 🔍 Détection du système d'exploitation
+      debug:
+        msg: "Système détecté: {{ ansible_os_family }} - {{ ansible_distribution }}"
+
+    # ===== CONFIGURATION POUR RED HAT/CENTOS/AMAZON LINUX =====
+    - name: 🔄 Mise à jour du système (Red Hat/CentOS/Amazon Linux)
       dnf:
         name: "*"
         state: latest
         update_cache: yes
-      register: system_update
+      when: ansible_os_family == "RedHat"
+      register: system_update_redhat
 
-    - name: 📦 Installation des packages Fode-DevOps
+    - name: 📦 Installation des packages (Red Hat/CentOS/Amazon Linux)
       dnf:
-        name: "{{ packages }}"
+        name: "{{ packages_redhat }}"
         state: present
+      when: ansible_os_family == "RedHat"
 
-    # ✅ CORRECTION 1: Ajouter les dépendances firewall
-    - name: 📦 Installation des dépendances firewall
+    - name: 📦 Installation des dépendances firewall (Red Hat)
       dnf:
         name: 
           - firewalld
           - python3-firewall
         state: present
+      when: ansible_os_family == "RedHat"
 
-    - name: 🔥 Démarrage du service firewalld
+    - name: 🔥 Démarrage du service firewalld (Red Hat)
       systemd:
         name: firewalld
         state: started
         enabled: yes
+      when: ansible_os_family == "RedHat"
 
-    - name: 🌐 Vérification du service Apache
+    - name: 🌐 Démarrage du service Apache (Red Hat)
       systemd:
         name: httpd
         state: started
         enabled: yes
+      when: ansible_os_family == "RedHat"
 
+    - name: 🔧 Configuration du firewall (Red Hat)
+      firewalld:
+        port: "{{ item }}/tcp"
+        permanent: yes
+        state: enabled
+        immediate: yes
+      loop:
+        - "80"
+        - "443"
+      when: ansible_os_family == "RedHat"
+      ignore_errors: yes
+
+    # ===== CONFIGURATION POUR UBUNTU/DEBIAN =====
+    - name: 🔄 Mise à jour du système (Ubuntu/Debian)
+      apt:
+        update_cache: yes
+        upgrade: dist
+        cache_valid_time: 3600
+      when: ansible_os_family == "Debian"
+      register: system_update_debian
+
+    - name: 📦 Installation des packages (Ubuntu/Debian)
+      apt:
+        name: "{{ packages_debian }}"
+        state: present
+        update_cache: yes
+      when: ansible_os_family == "Debian"
+
+    - name: 🌐 Démarrage du service Apache (Ubuntu/Debian)
+      systemd:
+        name: apache2
+        state: started
+        enabled: yes
+      when: ansible_os_family == "Debian"
+
+    - name: 🔧 Configuration du firewall UFW (Ubuntu/Debian)
+      ufw:
+        rule: allow
+        port: "{{ item }}"
+        proto: tcp
+      loop:
+        - "80"
+        - "443"
+        - "22"
+      when: ansible_os_family == "Debian"
+      ignore_errors: yes
+
+    - name: 🔥 Activation du firewall UFW (Ubuntu/Debian)
+      ufw:
+        state: enabled
+      when: ansible_os_family == "Debian"
+      ignore_errors: yes
+
+    # ===== TÂCHES COMMUNES =====
     - name: 📝 Création du script de monitoring Fode-DevOps
       template:
         src: monitor.sh.j2
@@ -69,36 +155,48 @@
         mode: '0755'
         owner: ec2-user
         group: ec2-user
-
-    # ✅ CORRECTION 2: Configuration firewall corrigée
-    - name: 🔧 Configuration du firewall
-      firewalld:
-        port: "{{ item }}/tcp"
-        permanent: yes
-        state: enabled
-        immediate: yes
-      loop:
-        - "{{ web_port }}"
-        - "{{ ssl_port }}"
       ignore_errors: yes
 
+    - name: 📄 Création du répertoire web
+      file:
+        path: /var/www/html
+        state: directory
+        mode: '0755'
+        owner: "{{ 'apache' if ansible_os_family == 'RedHat' else 'www-data' }}"
+        group: "{{ 'apache' if ansible_os_family == 'RedHat' else 'www-data' }}"
+
     - name: 📄 Création page de test Ansible
-      template:
-        src: ansible-test.html.j2
+      copy:
+        content: |
+          <!DOCTYPE html>
+          <html>
+          <head>
+              <title>Fode-DevOps - Test Ansible</title>
+              <style>
+                  body { font-family: Arial, sans-serif; margin: 40px; background: #f4f4f4; }
+                  .container { background: white; padding: 20px; border-radius: 10px; box-shadow: 0 0 10px rgba(0,0,0,0.1); }
+                  h1 { color: #2c3e50; }
+                  .info { background: #e8f4fd; padding: 15px; border-radius: 5px; margin: 10px 0; }
+              </style>
+          </head>
+          <body>
+              <div class="container">
+                  <h1>🚀 Fode-DevOps Infrastructure</h1>
+                  <div class="info">
+                      <h3>✅ Configuration Ansible réussie!</h3>
+                      <p><strong>Serveur:</strong> {{ inventory_hostname }}</p>
+                      <p><strong>OS:</strong> {{ ansible_distribution }} {{ ansible_distribution_version }}</p>
+                      <p><strong>Date:</strong> {{ ansible_date_time.date }}</p>
+                      <p><strong>Projet:</strong> {{ project_name }}</p>
+                      <p><strong>Environnement:</strong> {{ environment }}</p>
+                  </div>
+              </div>
+          </body>
+          </html>
         dest: /var/www/html/ansible-test.html
         mode: '0644'
-        owner: apache
-        group: apache
-
-    # ✅ CORRECTION 3: Tâche AWS commentée (temporairement)
-    # - name: 🏷️ Ajout de tags AWS via CLI
-    #   shell: |
-    #     aws ec2 create-tags --region {{ aws_region }} \
-    #     --resources {{ instance_id }} \
-    #     --tags Key=ManagedBy,Value=Ansible Key=UpdatedBy,Value=Fode-DevOps-Ansible
-    #   environment:
-    #     AWS_DEFAULT_REGION: "{{ aws_region }}"
-    #   ignore_errors: yes
+        owner: "{{ 'apache' if ansible_os_family == 'RedHat' else 'www-data' }}"
+        group: "{{ 'apache' if ansible_os_family == 'RedHat' else 'www-data' }}"
 
     - name: 📊 Collecte des métriques système
       shell: |
@@ -108,21 +206,21 @@
         echo "Disk: $(df -h / | tail -1)"
         echo "Load: $(cat /proc/loadavg)"
         echo "Processes: $(ps aux | wc -l)"
+        echo "OS: {{ ansible_distribution }} {{ ansible_distribution_version }}"
       register: system_metrics
 
     - name: 📈 Affichage des métriques
       debug:
         msg: "{{ system_metrics.stdout_lines }}"
 
-    # ✅ CORRECTION 4: Validation finale corrigée
-    - name: ✅ Validation finale
+    - name: ✅ Test de validation finale
       uri:
-        url: "http://{{ ansible_host }}/ansible-test.html"
+        url: "http://localhost/ansible-test.html"
         method: GET
         status_code: 200
-        timeout: 30
-      delegate_to: localhost
-      become: no
+        timeout: 10
+      delegate_to: "{{ inventory_hostname }}"
+      ignore_errors: yes
       register: web_check
 
     - name: 🎉 Message de succès Fode-DevOps
@@ -133,6 +231,7 @@
 
           🌐 Site web: http://{{ ansible_host }}
           🧪 Page test: http://{{ ansible_host }}/ansible-test.html
-          📊 Monitoring: ssh ec2-user@{{ ansible_host }} './fode-devops-monitor-ansible.sh'
+          📊 OS détecté: {{ ansible_distribution }} {{ ansible_distribution_version }}
+          🔧 Gestionnaire: {{ ansible_pkg_mgr }}
 
           🚀 Infrastructure Fode-DevOps opérationnelle !

@@ -22,6 +22,40 @@ def get_terraform_output(output_name):
     except subprocess.CalledProcessError:
         return None
 
+def get_instance_info(instance_id, region='eu-west-1'):
+    """Récupère les informations détaillées de l'instance"""
+    try:
+        print(f"🔍 Récupération des informations pour {instance_id}...")
+        
+        # Récupérer les informations de l'instance
+        result = subprocess.run([
+            'aws', 'ec2', 'describe-instances',
+            '--region', region,
+            '--instance-ids', instance_id,
+            '--query', 'Reservations[0].Instances[0]',
+            '--output', 'json'
+        ], capture_output=True, text=True)
+        
+        if result.returncode == 0:
+            instance_data = json.loads(result.stdout)
+            return {
+                'public_ip': instance_data.get('PublicIpAddress'),
+                'private_ip': instance_data.get('PrivateIpAddress'),
+                'state': instance_data.get('State', {}).get('Name'),
+                'vpc_id': instance_data.get('VpcId'),
+                'subnet_id': instance_data.get('SubnetId'),
+                'security_groups': [sg['GroupId'] for sg in instance_data.get('SecurityGroups', [])],
+                'instance_type': instance_data.get('InstanceType'),
+                'platform': instance_data.get('Platform', 'linux')
+            }
+        else:
+            print(f"❌ Erreur lors de la récupération des infos: {result.stderr}")
+            return None
+            
+    except Exception as e:
+        print(f"❌ Erreur lors de la récupération des infos: {e}")
+        return None
+
 def check_ssm_agent(instance_id, region='eu-west-1'):
     """Vérifie si l'instance est accessible via SSM"""
     try:
@@ -46,113 +80,106 @@ def check_ssm_agent(instance_id, region='eu-west-1'):
         print(f"❌ Erreur lors de la vérification SSM: {e}")
         return False
 
-def install_ssm_plugin():
-    """Instructions pour installer le plugin SSM"""
-    return """
-# Pour installer le plugin SSM dans GitHub Actions, ajoutez cette étape:
-- name: Install AWS Session Manager Plugin
-  run: |
-    curl "https://s3.amazonaws.com/session-manager-downloads/plugin/latest/ubuntu_64bit/session-manager-plugin.deb" -o "session-manager-plugin.deb"
-    sudo dpkg -i session-manager-plugin.deb
-    session-manager-plugin --version
-"""
-
 def main():
-    print("🚀 Génération d'inventaire avec AWS Systems Manager")
+    print("🚀 Génération d'inventaire Ansible pour Fode-DevOps")
     
-    # Récupérer les informations
+    # Récupérer les informations Terraform
     instance_id = get_terraform_output('instance_id')
     instance_private_ip = get_terraform_output('instance_private_ip')
+    instance_public_ip = get_terraform_output('instance_public_ip')
     s3_bucket = get_terraform_output('s3_bucket_name')
     load_balancer_dns = get_terraform_output('load_balancer_dns')
     vpc_id = get_terraform_output('vpc_id')
     
     print(f"📋 Instance ID: {instance_id}")
     print(f"📋 Private IP: {instance_private_ip}")
+    print(f"📋 Public IP: {instance_public_ip}")
+    print(f"📋 Load Balancer: {load_balancer_dns}")
     
     if not instance_id:
         print("❌ Instance ID non trouvé")
         sys.exit(1)
     
+    # Récupérer les informations détaillées de l'instance
+    instance_info = get_instance_info(instance_id)
+    
     # Vérifier l'accès SSM
     ssm_available = check_ssm_agent(instance_id)
     
-    if ssm_available:
-        print("✅ Configuration avec AWS SSM Session Manager")
-        
-        inventory = {
-            "all": {
-                "children": {
-                    "fode_devops_prod": {
-                        "hosts": {
-                            "fode-web-server": {
-                                "ansible_host": instance_id,
-                                "ansible_user": "ec2-user",
-                                "ansible_connection": "aws_ssm",
-                                "ansible_aws_ssm_bucket_name": s3_bucket,
-                                "ansible_aws_ssm_region": "eu-west-1",
-                                "ansible_python_interpreter": "/usr/bin/python3",
-                                "ansible_ssh_timeout": 60,
-                                "private_ip": instance_private_ip
-                            }
-                        },
-                        "vars": {
-                            "project_name": "fode-devops",
-                            "environment": "prod",
-                            "aws_region": "eu-west-1",
-                            "vpc_id": vpc_id,
-                            "instance_id": instance_id,
-                            "s3_bucket": s3_bucket,
-                            "load_balancer_dns": load_balancer_dns,
-                            "connection_type": "ssm",
-                            "web_port": 80,
-                            "ssl_port": 443
-                        }
-                    }
-                }
-            }
-        }
-        
-        # Créer aussi un fichier d'instructions pour l'installation du plugin
-        with open('ssm_setup_instructions.md', 'w') as f:
-            f.write(install_ssm_plugin())
-        
+    # Déterminer la meilleure méthode de connexion
+    if load_balancer_dns and load_balancer_dns != "null":
+        # Utiliser le Load Balancer
+        target_host = load_balancer_dns
+        connection_method = "load_balancer"
+        print(f"✅ Utilisation du Load Balancer: {target_host}")
+    elif instance_public_ip and instance_public_ip != "null":
+        # Utiliser l'IP publique
+        target_host = instance_public_ip
+        connection_method = "public_ip"
+        print(f"✅ Utilisation de l'IP publique: {target_host}")
+    elif instance_private_ip:
+        # Utiliser l'IP privée
+        target_host = instance_private_ip
+        connection_method = "private_ip"
+        print(f"✅ Utilisation de l'IP privée: {target_host}")
     else:
-        print("❌ Instance non accessible via SSM")
-        print("Solutions:")
-        print("1. Vérifier que l'instance has les permissions SSM")
-        print("2. Vérifier que SSM Agent est installé et démarré")
-        print("3. Vérifier les Security Groups et NACLs")
-        
-        # Générer un inventaire de base quand même
-        inventory = {
-            "all": {
-                "children": {
-                    "fode_devops_prod": {
-                        "hosts": {
-                            "fode-web-server": {
-                                "ansible_host": instance_private_ip or instance_id,
-                                "ansible_user": "ec2-user",
-                                "ansible_connection": "local",  # Pas de connexion réelle
-                                "ansible_python_interpreter": "/usr/bin/python3",
-                                "ssm_available": False
-                            }
-                        },
-                        "vars": {
-                            "project_name": "fode-devops",
-                            "environment": "prod",
-                            "aws_region": "eu-west-1",
-                            "vpc_id": vpc_id,
-                            "instance_id": instance_id,
-                            "s3_bucket": s3_bucket,
-                            "load_balancer_dns": load_balancer_dns,
-                            "connection_type": "none",
-                            "error": "No accessible connection method found"
-                        }
-                    }
+        target_host = instance_id
+        connection_method = "instance_id"
+        print(f"⚠️ Utilisation de l'Instance ID: {target_host}")
+    
+    # Construire l'inventaire
+    inventory = {
+        "_meta": {
+            "hostvars": {
+                "fode-web-server": {
+                    "ansible_host": target_host,
+                    "ansible_user": "ec2-user",
+                    "ansible_python_interpreter": "/usr/bin/python3",
+                    "ansible_connection": "ssh" if connection_method != "instance_id" else "local",
+                    "ansible_ssh_common_args": "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null",
+                    "ansible_ssh_timeout": 60,
+                    "connection_type": connection_method,
+                    "instance_id": instance_id,
+                    "private_ip": instance_private_ip,
+                    "public_ip": instance_public_ip,
+                    "load_balancer_dns": load_balancer_dns,
+                    "ssm_available": ssm_available,
+                    "project_name": "fode-devops",
+                    "environment": "prod",
+                    "aws_region": "eu-west-1",
+                    "vpc_id": vpc_id,
+                    "s3_bucket": s3_bucket
                 }
             }
+        },
+        "all": {
+            "children": ["ungrouped", "fode_devops_prod"]
+        },
+        "fode_devops_prod": {
+            "hosts": ["fode-web-server"]
         }
+    }
+    
+    # Ajouter les variables de groupe
+    inventory["fode_devops_prod"] = {
+        "hosts": ["fode-web-server"],
+        "vars": {
+            "project_name": "fode-devops",
+            "environment": "prod",
+            "aws_region": "eu-west-1",
+            "web_port": 80,
+            "ssl_port": 443,
+            "packages": [
+                "httpd" if connection_method != "load_balancer" else "apache2",
+                "wget", "curl", "git", "vim", "htop", "tree", "net-tools"
+            ]
+        }
+    }
+    
+    # Si connexion échoue, marquer comme erreur mais continuer
+    if connection_method == "instance_id":
+        inventory["_meta"]["hostvars"]["fode-web-server"]["error"] = "No accessible connection method found"
+        inventory["_meta"]["hostvars"]["fode-web-server"]["ansible_connection"] = "local"
     
     # Sauvegarder l'inventaire
     inventory_dir = 'ansible/inventory'
@@ -166,10 +193,15 @@ def main():
         json.dump(inventory, f, indent=2)
     
     print(f"✅ Inventaire généré: {inventory_file}")
+    print(f"🎯 Méthode de connexion: {connection_method}")
+    print(f"🎯 Hôte cible: {target_host}")
     
     if ssm_available:
-        print("📋 Pour utiliser SSM, installez le plugin session-manager dans votre workflow")
-        print("📋 Voir le fichier ssm_setup_instructions.md")
+        print("💡 SSM disponible - vous pouvez aussi utiliser la connexion SSM")
+    
+    # Afficher l'inventaire généré
+    print("\n📄 Inventaire généré:")
+    print(json.dumps(inventory, indent=2))
 
 if __name__ == "__main__":
     main()
