@@ -107,79 +107,102 @@ def main():
     ssm_available = check_ssm_agent(instance_id)
     
     # Déterminer la meilleure méthode de connexion
-    if load_balancer_dns and load_balancer_dns != "null":
+    if ssm_available:
+        # Priorité à SSM si disponible
+        target_host = instance_id
+        connection_method = "ssm"
+        ansible_connection = "aws_ssm"
+        print(f"✅ Utilisation de SSM: {target_host}")
+    elif load_balancer_dns and load_balancer_dns != "null":
         # Utiliser le Load Balancer
         target_host = load_balancer_dns
         connection_method = "load_balancer"
+        ansible_connection = "ssh"
         print(f"✅ Utilisation du Load Balancer: {target_host}")
     elif instance_public_ip and instance_public_ip != "null":
         # Utiliser l'IP publique
         target_host = instance_public_ip
         connection_method = "public_ip"
+        ansible_connection = "ssh"
         print(f"✅ Utilisation de l'IP publique: {target_host}")
     elif instance_private_ip:
         # Utiliser l'IP privée
         target_host = instance_private_ip
         connection_method = "private_ip"
+        ansible_connection = "ssh"
         print(f"✅ Utilisation de l'IP privée: {target_host}")
     else:
         target_host = instance_id
-        connection_method = "instance_id"
-        print(f"⚠️ Utilisation de l'Instance ID: {target_host}")
+        connection_method = "fallback"
+        ansible_connection = "local"
+        print(f"⚠️ Fallback vers Instance ID: {target_host}")
+    
+    # Configuration de base des variables d'hôte
+    host_vars = {
+        "ansible_host": target_host,
+        "ansible_python_interpreter": "/usr/bin/python3",
+        "ansible_connection": ansible_connection,
+        "connection_type": connection_method,
+        "instance_id": instance_id,
+        "private_ip": instance_private_ip,
+        "public_ip": instance_public_ip,
+        "load_balancer_dns": load_balancer_dns,
+        "ssm_available": ssm_available,
+        "project_name": "fode-devops",
+        "environment": "prod",
+        "aws_region": "eu-west-1",
+        "vpc_id": vpc_id,
+        "s3_bucket": s3_bucket
+    }
+    
+    # Configuration spécifique selon le type de connexion
+    if connection_method == "ssm":
+        # Configuration pour SSM
+        host_vars.update({
+            "ansible_user": "ec2-user",
+            "ansible_aws_ssm_bucket_name": s3_bucket,
+            "ansible_aws_ssm_region": "eu-west-1",
+            "ansible_ssh_timeout": 120,
+            "ansible_aws_ssm_timeout": 120
+        })
+    else:
+        # Configuration pour SSH
+        host_vars.update({
+            "ansible_user": "ec2-user",
+            "ansible_ssh_common_args": "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null",
+            "ansible_ssh_timeout": 60
+        })
     
     # Construire l'inventaire
     inventory = {
         "_meta": {
             "hostvars": {
-                "fode-web-server": {
-                    "ansible_host": target_host,
-                    "ansible_user": "ec2-user",
-                    "ansible_python_interpreter": "/usr/bin/python3",
-                    "ansible_connection": "ssh" if connection_method != "instance_id" else "local",
-                    "ansible_ssh_common_args": "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null",
-                    "ansible_ssh_timeout": 60,
-                    "connection_type": connection_method,
-                    "instance_id": instance_id,
-                    "private_ip": instance_private_ip,
-                    "public_ip": instance_public_ip,
-                    "load_balancer_dns": load_balancer_dns,
-                    "ssm_available": ssm_available,
-                    "project_name": "fode-devops",
-                    "environment": "prod",
-                    "aws_region": "eu-west-1",
-                    "vpc_id": vpc_id,
-                    "s3_bucket": s3_bucket
-                }
+                "fode-web-server": host_vars
             }
         },
         "all": {
             "children": ["ungrouped", "fode_devops_prod"]
         },
         "fode_devops_prod": {
-            "hosts": ["fode-web-server"]
+            "hosts": ["fode-web-server"],
+            "vars": {
+                "project_name": "fode-devops",
+                "environment": "prod",
+                "aws_region": "eu-west-1",
+                "web_port": 80,
+                "ssl_port": 443,
+                "connection_type": connection_method,
+                "packages": [
+                    "httpd",
+                    "wget", "curl", "git", "vim", "htop", "tree", "net-tools"
+                ]
+            }
         }
     }
     
-    # Ajouter les variables de groupe
-    inventory["fode_devops_prod"] = {
-        "hosts": ["fode-web-server"],
-        "vars": {
-            "project_name": "fode-devops",
-            "environment": "prod",
-            "aws_region": "eu-west-1",
-            "web_port": 80,
-            "ssl_port": 443,
-            "packages": [
-                "httpd" if connection_method != "load_balancer" else "apache2",
-                "wget", "curl", "git", "vim", "htop", "tree", "net-tools"
-            ]
-        }
-    }
-    
-    # Si connexion échoue, marquer comme erreur mais continuer
-    if connection_method == "instance_id":
+    # Marquer les erreurs si nécessaire
+    if connection_method == "fallback":
         inventory["_meta"]["hostvars"]["fode-web-server"]["error"] = "No accessible connection method found"
-        inventory["_meta"]["hostvars"]["fode-web-server"]["ansible_connection"] = "local"
     
     # Sauvegarder l'inventaire
     inventory_dir = 'ansible/inventory'
@@ -195,9 +218,12 @@ def main():
     print(f"✅ Inventaire généré: {inventory_file}")
     print(f"🎯 Méthode de connexion: {connection_method}")
     print(f"🎯 Hôte cible: {target_host}")
+    print(f"🎯 Type de connexion Ansible: {ansible_connection}")
     
     if ssm_available:
-        print("💡 SSM disponible - vous pouvez aussi utiliser la connexion SSM")
+        print("💡 SSM disponible et configuré comme méthode principale")
+    elif connection_method != "ssm":
+        print("💡 SSM non disponible - utilisation de SSH")
     
     # Afficher l'inventaire généré
     print("\n📄 Inventaire généré:")
