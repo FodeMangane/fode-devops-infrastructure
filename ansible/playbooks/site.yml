@@ -3,11 +3,14 @@
 # =============================================================================
 ---
 - name: 🚀 Configuration complète infrastructure Fode-DevOps
-  hosts: fode_devops_prod
+  hosts: web_servers  # Changé de fode_devops_prod vers web_servers
   become: yes
   gather_facts: yes
 
   vars:
+    project_name: "fode-devops"
+    environment: "production"
+    
     fode_devops_banner: |
 
       ======================================
@@ -148,9 +151,27 @@
       ignore_errors: yes
 
     # ===== TÂCHES COMMUNES =====
+    - name: 📝 Création du répertoire pour scripts
+      file:
+        path: /home/ec2-user
+        state: directory
+        mode: '0755'
+        owner: ec2-user
+        group: ec2-user
+      ignore_errors: yes
+
     - name: 📝 Création du script de monitoring Fode-DevOps
-      template:
-        src: monitor.sh.j2
+      copy:
+        content: |
+          #!/bin/bash
+          # Fode-DevOps Monitoring Script
+          echo "=== FODE-DEVOPS MONITORING ==="
+          echo "Date: $(date)"
+          echo "Uptime: $(uptime)"
+          echo "Memory: $(free -h | grep Mem)"
+          echo "Disk: $(df -h / | tail -1)"
+          echo "Load: $(cat /proc/loadavg)"
+          echo "================================"
         dest: /home/ec2-user/fode-devops-monitor-ansible.sh
         mode: '0755'
         owner: ec2-user
@@ -219,7 +240,6 @@
         method: GET
         status_code: 200
         timeout: 10
-      delegate_to: "{{ inventory_hostname }}"
       ignore_errors: yes
       register: web_check
 
@@ -229,8 +249,8 @@
 
           ✅ Configuration Ansible terminée avec succès !
 
-          🌐 Site web: http://{{ ansible_host }}
-          🧪 Page test: http://{{ ansible_host }}/ansible-test.html
+          🌐 Site web: http://{{ ansible_host | default('localhost') }}
+          🧪 Page test: http://{{ ansible_host | default('localhost') }}/ansible-test.html
           📊 OS détecté: {{ ansible_distribution }} {{ ansible_distribution_version }}
           🔧 Gestionnaire: {{ ansible_pkg_mgr }}
 

@@ -755,16 +755,14 @@ jobs:
         # Définir les timeouts selon le type de connexion
         if [ "$CONNECTION_TYPE" = "ssm" ]; then
           TIMEOUT=180
-          CONNECTION_TIMEOUT=120
-          echo "⏰ Utilisation de timeouts étendus pour SSM"
+          echo "⏰ Utilisation de timeout étendu pour SSM: ${TIMEOUT}s"
         else
           TIMEOUT=60
-          CONNECTION_TIMEOUT=30
-          echo "⏰ Utilisation de timeouts standards pour SSH"
+          echo "⏰ Utilisation de timeout standard pour SSH: ${TIMEOUT}s"
         fi
         
         # Test de ping (peut échouer en SSH sans clé)
-        ansible all -i inventory/dynamic_hosts.json -m ping -v --timeout=$TIMEOUT || {
+        ansible all -i inventory/dynamic_hosts.json -m ping -v -T $TIMEOUT || {
           echo "⚠️ Test de ping échoué"
           if [ "$CONNECTION_TYPE" != "ssm" ]; then
             echo "📋 Pour SSH, assurez-vous d'avoir :"
@@ -780,24 +778,47 @@ jobs:
         
         echo ""
         echo "🚀 Exécution du playbook Ansible:"
-        ansible-playbook -i inventory/dynamic_hosts.json playbooks/site.yml -v \
-          --timeout=$TIMEOUT \
-          --connection-timeout=$CONNECTION_TIMEOUT \
-          || {
-            echo "❌ Le playbook a échoué"
+        
+        # Configuration des arguments selon le type de connexion
+        ANSIBLE_ARGS="-i inventory/dynamic_hosts.json playbooks/site.yml -v -T $TIMEOUT"
+        
+        if [ "$CONNECTION_TYPE" = "ssm" ]; then
+          # Pour SSM, augmenter le nombre de forks pour éviter les timeouts
+          ANSIBLE_ARGS="$ANSIBLE_ARGS -f 1"
+          echo "🔧 Configuration SSM: forks=1, timeout=${TIMEOUT}s"
+        else
+          # Pour SSH, configuration standard
+          ANSIBLE_ARGS="$ANSIBLE_ARGS --ssh-common-args='-o ConnectTimeout=30 -o ServerAliveInterval=60'"
+          echo "🔧 Configuration SSH: timeout=${TIMEOUT}s, avec keep-alive"
+        fi
+        
+        ansible-playbook $ANSIBLE_ARGS || {
+          echo "❌ Le playbook a échoué"
+          
+          if [ "$CONNECTION_TYPE" = "ssm" ]; then
+            echo "📋 Diagnostic SSM:"
+            echo "   - Vérifiez que l'instance est en ligne"
+            echo "   - Vérifiez les permissions IAM pour SSM"
+            echo "   - Vérifiez que l'agent SSM est installé et fonctionnel"
             
-            if [ "$CONNECTION_TYPE" = "ssm" ]; then
-              echo "📋 Diagnostic SSM:"
-              ansible all -i inventory/dynamic_hosts.json -m setup -a "filter=ansible_default_ipv4" --timeout=$TIMEOUT || echo "Impossible de récupérer les informations via SSM"
-            else
-              echo "📋 Diagnostic SSH:"
-              echo "   - Vérifiez la configuration de la clé SSH"
-              echo "   - Vérifiez l'accès réseau"
-              echo "   - Vérifiez les Security Groups"
+            # Test rapide de l'état SSM
+            if [ "${{ steps.extract_info.outputs.INSTANCE_ID }}" != "N/A" ]; then
+              echo "🔍 Vérification de l'état SSM:"
+              aws ssm describe-instance-information \
+                --filters "Key=InstanceIds,Values=${{ steps.extract_info.outputs.INSTANCE_ID }}" \
+                --query 'InstanceInformationList[0].{PingStatus:PingStatus,LastPingDateTime:LastPingDateTime}' \
+                --output table || echo "Impossible de vérifier l'état SSM"
             fi
-            
-            exit 1
-          }
+          else
+            echo "📋 Diagnostic SSH:"
+            echo "   - Vérifiez la configuration de la clé SSH"
+            echo "   - Vérifiez l'accès réseau (Security Groups, NACLs)"
+            echo "   - Vérifiez que le port SSH (22) est ouvert"
+            echo "   - Vérifiez que l'utilisateur 'ec2-user' existe"
+          fi
+          
+          exit 1
+        }
         
     - name: 📊 Résumé du déploiement Ansible
       if: always()

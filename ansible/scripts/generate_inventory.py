@@ -1,233 +1,177 @@
 #!/usr/bin/env python3
+"""
+Script pour générer l'inventaire Ansible dynamique à partir des outputs Terraform
+"""
+
 import json
 import subprocess
 import sys
 import os
+from pathlib import Path
 
-def get_terraform_output(output_name):
-    """Récupère un output Terraform spécifique"""
+def run_terraform_command(command, cwd):
+    """Exécute une commande terraform et retourne la sortie"""
     try:
-        terraform_dir = './terraform'
-        if not os.path.exists(terraform_dir):
-            terraform_dir = '../terraform'
-        
         result = subprocess.run(
-            ['terraform', 'output', '-raw', output_name],
+            command,
+            cwd=cwd,
+            shell=True,
             capture_output=True,
             text=True,
-            check=True,
-            cwd=terraform_dir
+            timeout=30
         )
-        return result.stdout.strip()
-    except subprocess.CalledProcessError:
-        return None
-
-def get_instance_info(instance_id, region='eu-west-1'):
-    """Récupère les informations détaillées de l'instance"""
-    try:
-        print(f"🔍 Récupération des informations pour {instance_id}...")
-        
-        # Récupérer les informations de l'instance
-        result = subprocess.run([
-            'aws', 'ec2', 'describe-instances',
-            '--region', region,
-            '--instance-ids', instance_id,
-            '--query', 'Reservations[0].Instances[0]',
-            '--output', 'json'
-        ], capture_output=True, text=True)
-        
-        if result.returncode == 0:
-            instance_data = json.loads(result.stdout)
-            return {
-                'public_ip': instance_data.get('PublicIpAddress'),
-                'private_ip': instance_data.get('PrivateIpAddress'),
-                'state': instance_data.get('State', {}).get('Name'),
-                'vpc_id': instance_data.get('VpcId'),
-                'subnet_id': instance_data.get('SubnetId'),
-                'security_groups': [sg['GroupId'] for sg in instance_data.get('SecurityGroups', [])],
-                'instance_type': instance_data.get('InstanceType'),
-                'platform': instance_data.get('Platform', 'linux')
-            }
-        else:
-            print(f"❌ Erreur lors de la récupération des infos: {result.stderr}")
+        if result.returncode != 0:
+            print(f"Erreur terraform: {result.stderr}", file=sys.stderr)
             return None
-            
+        return result.stdout.strip()
     except Exception as e:
-        print(f"❌ Erreur lors de la récupération des infos: {e}")
+        print(f"Erreur lors de l'exécution de terraform: {e}", file=sys.stderr)
         return None
 
-def check_ssm_agent(instance_id, region='eu-west-1'):
-    """Vérifie si l'instance est accessible via SSM"""
-    try:
-        print(f"🔍 Vérification de l'accès SSM pour {instance_id}...")
-        
-        result = subprocess.run([
-            'aws', 'ssm', 'describe-instance-information',
-            '--region', region,
-            '--filters', f'Key=InstanceIds,Values={instance_id}',
-            '--query', 'InstanceInformationList[0].PingStatus',
-            '--output', 'text'
-        ], capture_output=True, text=True)
-        
-        if result.returncode == 0 and result.stdout.strip() == 'Online':
-            print("✅ Instance accessible via SSM")
-            return True
-        else:
-            print("❌ Instance non accessible via SSM")
-            return False
-            
-    except Exception as e:
-        print(f"❌ Erreur lors de la vérification SSM: {e}")
-        return False
+def get_terraform_output(output_name, terraform_dir):
+    """Récupère un output Terraform spécifique"""
+    command = f"terraform output -raw {output_name}"
+    result = run_terraform_command(command, terraform_dir)
+    return result if result and result != "null" and result != "" else None
 
-def main():
-    print("🚀 Génération d'inventaire Ansible pour Fode-DevOps")
+def determine_connection_type(terraform_dir):
+    """Détermine le type de connexion basé sur les outputs Terraform disponibles"""
     
-    # Récupérer les informations Terraform
-    instance_id = get_terraform_output('instance_id')
-    instance_private_ip = get_terraform_output('instance_private_ip')
-    instance_public_ip = get_terraform_output('instance_public_ip')
-    s3_bucket = get_terraform_output('s3_bucket_name')
-    load_balancer_dns = get_terraform_output('load_balancer_dns')
-    vpc_id = get_terraform_output('vpc_id')
+    # Vérifier les outputs disponibles
+    outputs_command = "terraform output -json"
+    outputs_json = run_terraform_command(outputs_command, terraform_dir)
     
-    print(f"📋 Instance ID: {instance_id}")
-    print(f"📋 Private IP: {instance_private_ip}")
-    print(f"📋 Public IP: {instance_public_ip}")
-    print(f"📋 Load Balancer: {load_balancer_dns}")
+    if not outputs_json:
+        print("Impossible de récupérer les outputs Terraform", file=sys.stderr)
+        return None, None, "ssh"
     
-    if not instance_id:
-        print("❌ Instance ID non trouvé")
+    try:
+        outputs = json.loads(outputs_json)
+        print(f"Outputs Terraform disponibles: {list(outputs.keys())}")
+    except json.JSONDecodeError:
+        print("Erreur lors du parsing des outputs Terraform", file=sys.stderr)
+        return None, None, "ssh"
+    
+    # Récupérer l'instance ID
+    instance_id = get_terraform_output("instance_id", terraform_dir)
+    
+    # Priorité : Load Balancer > IP Publique > IP Privée > SSM
+    load_balancer_dns = get_terraform_output("load_balancer_dns", terraform_dir)
+    if load_balancer_dns:
+        print(f"✅ Load Balancer trouvé: {load_balancer_dns}")
+        return "load_balancer", load_balancer_dns, "ssh"
+    
+    public_ip = get_terraform_output("instance_public_ip", terraform_dir)
+    if public_ip:
+        print(f"✅ IP Publique trouvée: {public_ip}")
+        return "public_ip", public_ip, "ssh"
+    
+    private_ip = get_terraform_output("instance_private_ip", terraform_dir)
+    if private_ip:
+        print(f"✅ IP Privée trouvée: {private_ip}")
+        return "private_ip", private_ip, "ssh"
+    
+    # Fallback vers SSM si on a un instance_id
+    if instance_id:
+        print(f"✅ Instance ID trouvé, utilisation de SSM: {instance_id}")
+        return "ssm", instance_id, "aws_ssm"
+    
+    print("❌ Aucune méthode de connexion trouvée", file=sys.stderr)
+    return None, None, "ssh"
+
+def generate_inventory():
+    """Génère l'inventaire Ansible dynamique"""
+    
+    # Déterminer les chemins
+    script_dir = Path(__file__).parent
+    project_root = script_dir.parent.parent
+    terraform_dir = project_root / "terraform"
+    inventory_dir = script_dir.parent / "inventory"
+    
+    print(f"Répertoire Terraform: {terraform_dir}")
+    print(f"Répertoire d'inventaire: {inventory_dir}")
+    
+    # Vérifier que le répertoire Terraform existe
+    if not terraform_dir.exists():
+        print(f"❌ Répertoire Terraform non trouvé: {terraform_dir}", file=sys.stderr)
         sys.exit(1)
     
-    # Récupérer les informations détaillées de l'instance
-    instance_info = get_instance_info(instance_id)
+    # Créer le répertoire d'inventaire s'il n'existe pas
+    inventory_dir.mkdir(parents=True, exist_ok=True)
     
-    # Vérifier l'accès SSM
-    ssm_available = check_ssm_agent(instance_id)
+    # Déterminer le type de connexion
+    connection_type, ansible_host, ansible_connection = determine_connection_type(terraform_dir)
     
-    # Déterminer la meilleure méthode de connexion
-    if ssm_available:
-        # Priorité à SSM si disponible
-        target_host = instance_id
-        connection_method = "ssm"
-        ansible_connection = "aws_ssm"
-        print(f"✅ Utilisation de SSM: {target_host}")
-    elif load_balancer_dns and load_balancer_dns != "null":
-        # Utiliser le Load Balancer
-        target_host = load_balancer_dns
-        connection_method = "load_balancer"
-        ansible_connection = "ssh"
-        print(f"✅ Utilisation du Load Balancer: {target_host}")
-    elif instance_public_ip and instance_public_ip != "null":
-        # Utiliser l'IP publique
-        target_host = instance_public_ip
-        connection_method = "public_ip"
-        ansible_connection = "ssh"
-        print(f"✅ Utilisation de l'IP publique: {target_host}")
-    elif instance_private_ip:
-        # Utiliser l'IP privée
-        target_host = instance_private_ip
-        connection_method = "private_ip"
-        ansible_connection = "ssh"
-        print(f"✅ Utilisation de l'IP privée: {target_host}")
-    else:
-        target_host = instance_id
-        connection_method = "fallback"
-        ansible_connection = "local"
-        print(f"⚠️ Fallback vers Instance ID: {target_host}")
+    if not connection_type or not ansible_host:
+        print("❌ Impossible de déterminer la configuration de connexion", file=sys.stderr)
+        sys.exit(1)
     
-    # Configuration de base des variables d'hôte
-    host_vars = {
-        "ansible_host": target_host,
-        "ansible_python_interpreter": "/usr/bin/python3",
-        "ansible_connection": ansible_connection,
-        "connection_type": connection_method,
-        "instance_id": instance_id,
-        "private_ip": instance_private_ip,
-        "public_ip": instance_public_ip,
-        "load_balancer_dns": load_balancer_dns,
-        "ssm_available": ssm_available,
-        "project_name": "fode-devops",
-        "environment": "prod",
-        "aws_region": "eu-west-1",
-        "vpc_id": vpc_id,
-        "s3_bucket": s3_bucket
-    }
+    # Récupérer les informations supplémentaires
+    instance_id = get_terraform_output("instance_id", terraform_dir)
+    s3_bucket = get_terraform_output("s3_bucket_name", terraform_dir)
     
-    # Configuration spécifique selon le type de connexion
-    if connection_method == "ssm":
-        # Configuration pour SSM
-        host_vars.update({
-            "ansible_user": "ec2-user",
-            "ansible_aws_ssm_bucket_name": s3_bucket,
-            "ansible_aws_ssm_region": "eu-west-1",
-            "ansible_ssh_timeout": 120,
-            "ansible_aws_ssm_timeout": 120
-        })
-    else:
-        # Configuration pour SSH
-        host_vars.update({
-            "ansible_user": "ec2-user",
-            "ansible_ssh_common_args": "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null",
-            "ansible_ssh_timeout": 60
-        })
-    
-    # Construire l'inventaire
+    # Créer l'inventaire au format Ansible JSON
     inventory = {
-        "_meta": {
-            "hostvars": {
-                "fode-web-server": host_vars
-            }
-        },
         "all": {
-            "children": ["ungrouped", "fode_devops_prod"]
-        },
-        "fode_devops_prod": {
-            "hosts": ["fode-web-server"],
-            "vars": {
-                "project_name": "fode-devops",
-                "environment": "prod",
-                "aws_region": "eu-west-1",
-                "web_port": 80,
-                "ssl_port": 443,
-                "connection_type": connection_method,
-                "packages": [
-                    "httpd",
-                    "wget", "curl", "git", "vim", "htop", "tree", "net-tools"
-                ]
+            "children": {
+                "web_servers": {
+                    "hosts": {
+                        "fode-web-server": {
+                            "ansible_host": ansible_host,
+                            "ansible_connection": ansible_connection,
+                            "ansible_user": "ec2-user",
+                            "connection_type": connection_type,
+                            "instance_id": instance_id or "N/A",
+                            "s3_bucket_name": s3_bucket or "N/A"
+                        }
+                    }
+                }
             }
         }
     }
     
-    # Marquer les erreurs si nécessaire
-    if connection_method == "fallback":
-        inventory["_meta"]["hostvars"]["fode-web-server"]["error"] = "No accessible connection method found"
+    # Configuration spécifique selon le type de connexion
+    host_config = inventory["all"]["children"]["web_servers"]["hosts"]["fode-web-server"]
+    
+    if ansible_connection == "aws_ssm":
+        host_config.update({
+            "ansible_aws_ssm_bucket_name": s3_bucket or "default-ssm-bucket",
+            "ansible_aws_ssm_region": "us-west-2",  # Ajustez selon votre région
+            "ansible_python_interpreter": "/usr/bin/python3"
+        })
+        # Pour SSM, on utilise l'instance ID comme host
+        host_config["ansible_host"] = instance_id
+    else:
+        # Pour SSH
+        host_config.update({
+            "ansible_ssh_private_key_file": "~/.ssh/id_rsa",  # Ajustez selon votre clé
+            "ansible_ssh_common_args": "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null",
+            "ansible_python_interpreter": "/usr/bin/python3"
+        })
     
     # Sauvegarder l'inventaire
-    inventory_dir = 'ansible/inventory'
-    if not os.path.exists('ansible'):
-        inventory_dir = 'inventory'
+    inventory_file = inventory_dir / "dynamic_hosts.json"
     
-    os.makedirs(inventory_dir, exist_ok=True)
-    inventory_file = os.path.join(inventory_dir, 'dynamic_hosts.json')
-    
-    with open(inventory_file, 'w') as f:
-        json.dump(inventory, f, indent=2)
-    
-    print(f"✅ Inventaire généré: {inventory_file}")
-    print(f"🎯 Méthode de connexion: {connection_method}")
-    print(f"🎯 Hôte cible: {target_host}")
-    print(f"🎯 Type de connexion Ansible: {ansible_connection}")
-    
-    if ssm_available:
-        print("💡 SSM disponible et configuré comme méthode principale")
-    elif connection_method != "ssm":
-        print("💡 SSM non disponible - utilisation de SSH")
-    
-    # Afficher l'inventaire généré
-    print("\n📄 Inventaire généré:")
-    print(json.dumps(inventory, indent=2))
+    try:
+        with open(inventory_file, 'w') as f:
+            json.dump(inventory, f, indent=2)
+        
+        print(f"✅ Inventaire généré avec succès: {inventory_file}")
+        print(f"📊 Configuration:")
+        print(f"   - Type de connexion: {connection_type}")
+        print(f"   - Ansible host: {ansible_host}")
+        print(f"   - Ansible connection: {ansible_connection}")
+        print(f"   - Instance ID: {instance_id or 'N/A'}")
+        print(f"   - S3 Bucket: {s3_bucket or 'N/A'}")
+        
+        return True
+        
+    except Exception as e:
+        print(f"❌ Erreur lors de la sauvegarde de l'inventaire: {e}", file=sys.stderr)
+        return False
 
 if __name__ == "__main__":
-    main()
+    if generate_inventory():
+        sys.exit(0)
+    else:
+        sys.exit(1)
